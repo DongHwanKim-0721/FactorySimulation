@@ -1,0 +1,1211 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import json
+import math
+
+class ProcessBlock:
+    """공정 블록 클래스"""
+    def __init__(self, block_id, block_type, x, y, process_time, capacity=1, custom_name=""):
+        self.id = block_id
+        self.type = block_type
+        self.x = x
+        self.y = y
+        self.process_time = process_time
+        self.capacity = capacity
+        self.custom_name = custom_name  # Free Block용 커스텀 이름
+        self.width = 150
+        self.height = 80
+
+class ProcessConnection:
+    """공정 간 연결 클래스"""
+    def __init__(self, conn_id, from_block, to_block):
+        self.id = conn_id
+        self.from_block = from_block
+        self.to_block = to_block
+
+class ProcessSimulator:
+    def __init__(self):
+        # 블록 타입 정의
+        self.BLOCK_TYPES = {
+            'INPUT': {'name': '원자재 투입', 'color': '#3b82f6', 'icon': '📥', 'default_time': 30},
+            'STORAGE': {'name': '적재', 'color': '#10b981', 'icon': '📦', 'default_time': 15},
+            'CUTTING': {'name': '절단기', 'color': '#f59e0b', 'icon': '✂️', 'default_time': 45},
+            'STRAIGHTNESS': {'name': '자동진직도 측정기', 'color': '#8b5cf6', 'icon': '📏', 'default_time': 20},
+            'HEAT': {'name': '열처리기', 'color': '#ef4444', 'icon': '🔥', 'default_time': 120},
+            'PRESS': {'name': '프레스 교정기', 'color': '#ec4899', 'icon': '⚙️', 'default_time': 60},
+            'FREE': {'name': 'Free Block', 'color': '#6b7280', 'icon': '📋', 'default_time': 30}  # 새로 추가
+        }
+        
+        # 상태 변수
+        self.blocks = []
+        self.connections = []
+        self.selected_block = None
+        self.drag_data = {'x': 0, 'y': 0, 'item': None}
+        self.connection_mode = False
+        self.connection_start = None
+        self.simulation_result = None
+        
+        # 커스텀 커서 생성을 위한 변수
+        self.connection_cursor = None
+        
+        # tkinter 창 생성
+        self.root = tk.Tk()
+        self.root.title("공정 시뮬레이션 프로그램 v1.2")
+        self.root.geometry("1600x900")
+        self.root.minsize(1400, 700)
+        
+        # 스타일 설정
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        self.create_widgets()
+        
+    def create_widgets(self):
+        """GUI 위젯 생성"""
+        # 메인 프레임
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 상단 툴바
+        self.create_toolbar(main_frame)
+        
+        # ========== 섹션 크기 조절 위치: PanedWindow 사용 ==========
+        # 3단 레이아웃을 위한 PanedWindow (좌측 팔레트 / 중앙 캔버스 / 우측 결과)
+        content_paned = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+        content_paned.pack(fill=tk.BOTH, expand=True)
+        
+        # 좌측 팔레트 프레임
+        left_frame = ttk.Frame(content_paned, width=200)
+        content_paned.add(left_frame, weight=0)  # weight=0: 고정 크기 유지
+        
+        # 중앙 캔버스 프레임
+        center_frame = ttk.Frame(content_paned)
+        content_paned.add(center_frame, weight=3)  # weight=3: 가장 많은 공간 할당
+        
+        # 우측 결과 프레임
+        right_frame = ttk.Frame(content_paned, width=400)
+        content_paned.add(right_frame, weight=1)  # weight=1: 중간 크기
+        # =========================================================
+        
+        # 좌측 팔레트 생성
+        self.create_palette(left_frame)
+        
+        # 중앙 캔버스 생성
+        self.create_canvas(center_frame)
+        
+        # 우측 결과 패널 생성
+        self.create_result_panel(right_frame)
+        
+        # 상태바
+        self.status_var = tk.StringVar(value="프로그램 준비 완료")
+        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
+        
+    def create_toolbar(self, parent):
+        """상단 툴바 생성"""
+        toolbar = ttk.Frame(parent, relief=tk.RAISED, padding=5)
+        toolbar.pack(fill=tk.X)
+        
+        # 제목
+        title = ttk.Label(toolbar, text="🏭 공정 시뮬레이션 프로그램 v1.2", 
+                         font=("Arial", 16, "bold"))
+        title.pack(side=tk.LEFT, padx=10)
+        
+        # 버튼들
+        btn_frame = ttk.Frame(toolbar)
+        btn_frame.pack(side=tk.RIGHT, padx=10)
+        
+        ttk.Button(btn_frame, text="▶ 시뮬레이션 실행", 
+                  command=self.run_simulation).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="💾 저장", 
+                  command=self.save_scenario).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="📂 불러오기", 
+                  command=self.load_scenario).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="🗑️ 초기화", 
+                  command=self.clear_all).pack(side=tk.LEFT, padx=2)
+        
+    def create_palette(self, parent):
+        """좌측 블록 팔레트 생성"""
+        palette_frame = ttk.LabelFrame(parent, text="📋 공정 블록 팔레트", padding=10)
+        palette_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 스크롤 가능한 프레임
+        canvas = tk.Canvas(palette_frame, width=250, bg='#dcdad5')
+        scrollbar = ttk.Scrollbar(palette_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # 블록 버튼들
+        for key, value in self.BLOCK_TYPES.items():
+            btn = tk.Button(
+                scrollable_frame,
+                text=f"{value['icon']} {value['name']}\n({value['default_time']}분)",
+                bg=value['color'],
+                fg='white',
+                font=("Arial", 10, "bold"),
+                relief=tk.RAISED,
+                bd=2,
+                cursor='hand2',
+                command=lambda k=key: self.add_block(k)
+            )
+            btn.pack(fill=tk.X, pady=5, ipady=10)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 사용 방법 안내
+        info_frame = ttk.LabelFrame(palette_frame, text="💡 사용 방법", padding=10)
+        info_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        info_text = """• 블록 클릭: 캔버스에 추가
+• 드래그: 블록 이동
+• 더블클릭: 파라미터 설정
+• 우클릭: 설정/삭제 메뉴
+• Shift+클릭: 연결 모드
+• 연결선 × 클릭: 연결 삭제
+• ESC: 연결 모드 종료"""
+        
+        ttk.Label(info_frame, text=info_text, font=("Arial", 9), 
+                 justify=tk.LEFT, wraplength=230).pack()
+        
+    def create_canvas(self, parent):
+        """중앙 캔버스 생성"""
+        canvas_frame = ttk.LabelFrame(parent, text="🎨 공정 다이어그램", padding=5)
+        canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 캔버스 생성
+        self.canvas = tk.Canvas(canvas_frame, bg='#f0f0f0', cursor='cross')
+        
+        # 커스텀 커서 생성
+        self.create_custom_cursor()
+        
+        # 스크롤바
+        h_scroll = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        v_scroll = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        
+        self.canvas.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
+        self.canvas.configure(scrollregion=(0, 0, 2000, 2000))
+        
+        # 배치
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        h_scroll.grid(row=1, column=0, sticky='ew')
+        v_scroll.grid(row=0, column=1, sticky='ns')
+        
+        canvas_frame.grid_rowconfigure(0, weight=1)
+        canvas_frame.grid_columnconfigure(0, weight=1)
+        
+        # 이벤트 바인딩
+        self.canvas.bind('<Button-1>', self.on_canvas_click)
+        self.canvas.bind('<B1-Motion>', self.on_canvas_drag)
+        self.canvas.bind('<ButtonRelease-1>', self.on_canvas_release)
+        self.canvas.bind('<Double-Button-1>', self.on_canvas_double_click)
+        self.canvas.bind('<Button-3>', self.on_canvas_right_click)
+        
+        # ESC 키로 연결 취소
+        self.root.bind('<Escape>', self.cancel_connection)
+        
+        # 마우스 휠 스크롤 바인딩
+        self.canvas.bind('<MouseWheel>', self.on_canvas_mousewheel)
+        self.canvas.bind('<Button-4>', self.on_canvas_mousewheel)
+        self.canvas.bind('<Button-5>', self.on_canvas_mousewheel)
+    
+    def create_custom_cursor(self):
+        """붉은색 커스텀 커서 생성"""
+        try:
+            import platform
+            system = platform.system()
+            
+            if system == "Windows":
+                self.connection_cursor = "hand2"
+            elif system == "Darwin":
+                self.connection_cursor = "pointinghand"
+            else:
+                self.connection_cursor = "hand2"
+        except:
+            self.connection_cursor = "hand2"
+        
+    def create_result_panel(self, parent):
+        """우측 결과 패널 생성"""
+        result_frame = ttk.LabelFrame(parent, text="📊 시뮬레이션 결과", padding=10)
+        result_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 노트북 탭
+        notebook = ttk.Notebook(result_frame)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # 요약 탭
+        summary_frame = ttk.Frame(notebook)
+        notebook.add(summary_frame, text="요약")
+        
+        self.summary_text = tk.Text(summary_frame, wrap=tk.WORD, font=("Arial", 10), 
+                                    bg='#fff3cd', fg='#856404', width=40, height=10)
+        summary_scroll = ttk.Scrollbar(summary_frame, orient="vertical", 
+                                       command=self.summary_text.yview)
+        self.summary_text.configure(yscrollcommand=summary_scroll.set)
+        
+        self.summary_text.pack(side="left", fill="both", expand=True)
+        summary_scroll.pack(side="right", fill="y")
+        
+        # 타임라인 탭
+        timeline_frame = ttk.Frame(notebook)
+        notebook.add(timeline_frame, text="타임라인")
+        
+        self.timeline_canvas = tk.Canvas(timeline_frame, bg='white', width=400)
+        timeline_scroll = ttk.Scrollbar(timeline_frame, orient="vertical", 
+                                       command=self.timeline_canvas.yview)
+        self.timeline_canvas.configure(yscrollcommand=timeline_scroll.set)
+        
+        self.timeline_canvas.pack(side="left", fill="both", expand=True)
+        timeline_scroll.pack(side="right", fill="y")
+        
+        # 분석 탭
+        analysis_frame = ttk.Frame(notebook)
+        notebook.add(analysis_frame, text="분석")
+        
+        self.analysis_text = tk.Text(analysis_frame, wrap=tk.WORD, font=("Arial", 9), 
+                                     bg='#f8f9fa', width=40, height=20)
+        analysis_scroll = ttk.Scrollbar(analysis_frame, orient="vertical", 
+                                       command=self.analysis_text.yview)
+        self.analysis_text.configure(yscrollcommand=analysis_scroll.set)
+        
+        self.analysis_text.pack(side="left", fill="both", expand=True)
+        analysis_scroll.pack(side="right", fill="y")
+        
+    def add_block(self, block_type):
+        """블록 추가"""
+        block_info = self.BLOCK_TYPES[block_type]
+        
+        # Free Block인 경우 이름 입력 다이얼로그
+        custom_name = ""
+        if block_type == 'FREE':
+            custom_name = self.prompt_free_block_name()
+            if not custom_name:  # 취소한 경우
+                return
+        
+        # 새 블록 생성
+        new_block = ProcessBlock(
+            block_id=len(self.blocks) + 1,
+            block_type=block_type,
+            x=150,
+            y=100 + len(self.blocks) * 100,
+            process_time=block_info['default_time'],
+            custom_name=custom_name
+        )
+        
+        self.blocks.append(new_block)
+        self.draw_block(new_block)
+        
+        display_name = custom_name if block_type == 'FREE' and custom_name else block_info['name']
+        self.status_var.set(f"{display_name} 블록이 추가되었습니다")
+    
+    def prompt_free_block_name(self):
+        """Free Block 이름 입력 다이얼로그"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Free Block 이름 입력")
+        dialog.geometry("400x180")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        result = {"name": ""}
+        
+        ttk.Label(dialog, text="블록 이름을 입력하세요:", 
+                 font=("Arial", 11, "bold")).pack(pady=20)
+        
+        name_var = tk.StringVar(value="사용자 정의 블록")
+        entry = ttk.Entry(dialog, textvariable=name_var, width=30, font=("Arial", 10))
+        entry.pack(pady=10)
+        entry.focus()
+        
+        def save_name():
+            result["name"] = name_var.get().strip()
+            dialog.destroy()
+        
+        def cancel():
+            dialog.destroy()
+        
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        
+        ttk.Button(btn_frame, text="확인", command=save_name).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="취소", command=cancel).pack(side=tk.LEFT, padx=5)
+        
+        entry.bind('<Return>', lambda e: save_name())
+        
+        dialog.wait_window()
+        return result["name"]
+        
+    def draw_block(self, block):
+        """캔버스에 블록 그리기"""
+        block_info = self.BLOCK_TYPES[block.type]
+        
+        # Free Block인 경우 커스텀 이름 사용
+        display_name = block.custom_name if block.type == 'FREE' and block.custom_name else block_info['name']
+        
+        # 사각형 그리기
+        rect_id = self.canvas.create_rectangle(
+            block.x, block.y,
+            block.x + block.width, block.y + block.height,
+            fill=block_info['color'],
+            outline='white',
+            width=3,
+            tags=f"block_{block.id}"
+        )
+        
+        # 아이콘과 이름
+        self.canvas.create_text(
+            block.x + 20, block.y + 20,
+            text=block_info['icon'],
+            font=("Arial", 20),
+            tags=f"block_{block.id}"
+        )
+        
+        self.canvas.create_text(
+            block.x + 75, block.y + 20,
+            text=display_name,
+            font=("Arial", 9, "bold"),
+            fill='white',
+            tags=f"block_{block.id}"
+        )
+        
+        # 시간 정보
+        self.canvas.create_text(
+            block.x + 75, block.y + 45,
+            text=f"⏱️ {block.process_time}분",
+            font=("Arial", 8),
+            fill='white',
+            tags=f"block_{block.id}"
+        )
+        
+        # 용량 정보
+        self.canvas.create_text(
+            block.x + 75, block.y + 60,
+            text=f"📊 용량: {block.capacity}",
+            font=("Arial", 8),
+            fill='white',
+            tags=f"block_{block.id}"
+        )
+        
+    def redraw_all(self):
+        """모든 블록과 연결선 다시 그리기"""
+        self.canvas.delete("all")
+        
+        # 연결선 먼저 그리기
+        for conn in self.connections:
+            self.draw_connection(conn)
+        
+        # 블록 그리기
+        for block in self.blocks:
+            self.draw_block(block)
+            
+    def draw_connection(self, connection):
+        """연결선 그리기"""
+        from_block = next((b for b in self.blocks if b.id == connection.from_block), None)
+        to_block = next((b for b in self.blocks if b.id == connection.to_block), None)
+        
+        if not from_block or not to_block:
+            return
+        
+        x1 = from_block.x + from_block.width + 5
+        y1 = from_block.y + from_block.height // 2
+        x2 = to_block.x - 10
+        y2 = to_block.y + to_block.height // 2
+        
+        # 화살표 그리기
+        line_id = self.canvas.create_line(
+            x1, y1, x2, y2,
+            arrow=tk.LAST,
+            fill='#64748b',
+            width=5,
+            tags=f"conn_{connection.id}"
+        )
+        
+        # 연결선 중간에 삭제 버튼용 작은 원 그리기
+        mid_x = (x1 + x2) / 2
+        mid_y = (y1 + y2) / 2
+        
+        circle_id = self.canvas.create_oval(
+            mid_x - 8, mid_y - 8,
+            mid_x + 8, mid_y + 8,
+            fill='#ef4444',
+            outline='white',
+            width=2,
+            tags=f"conn_{connection.id}_delete"
+        )
+        
+        # X 표시
+        self.canvas.create_text(
+            mid_x, mid_y,
+            text="×",
+            font=("Arial", 12, "bold"),
+            fill='white',
+            tags=f"conn_{connection.id}_delete"
+        )
+        
+    def on_canvas_click(self, event):
+        """캔버스 클릭 이벤트"""
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        
+        clicked = self.canvas.find_overlapping(x, y, x, y)
+        
+        # 연결선 삭제 버튼 클릭 확인
+        for item in clicked:
+            tags = self.canvas.gettags(item)
+            for tag in tags:
+                if tag.endswith('_delete'):
+                    conn_id = int(tag.split('_')[1])
+                    connection = next((c for c in self.connections if c.id == conn_id), None)
+                    if connection:
+                        self.delete_connection(connection)
+                        return
+        
+        # Shift + 클릭: 연결 모드
+        if event.state & 0x0001:
+            for item in clicked:
+                tags = self.canvas.gettags(item)
+                for tag in tags:
+                    if tag.startswith('block_'):
+                        block_id = int(tag.split('_')[1])
+                        block = next((b for b in self.blocks if b.id == block_id), None)
+                        
+                        if block:
+                            self.start_connection(block)
+                            return
+            return
+        
+        # 일반 클릭: 드래그 준비
+        for item in clicked:
+            tags = self.canvas.gettags(item)
+            for tag in tags:
+                if tag.startswith('block_'):
+                    block_id = int(tag.split('_')[1])
+                    block = next((b for b in self.blocks if b.id == block_id), None)
+                    
+                    if block:
+                        self.selected_block = block
+                        self.drag_data['x'] = x
+                        self.drag_data['y'] = y
+                        self.drag_data['item'] = block
+                        return
+        
+        self.selected_block = None
+        
+    def on_canvas_drag(self, event):
+        """드래그 이벤트"""
+        if not self.drag_data['item']:
+            return
+        
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        
+        dx = x - self.drag_data['x']
+        dy = y - self.drag_data['y']
+        
+        block = self.drag_data['item']
+        block.x += dx
+        block.y += dy
+        
+        self.drag_data['x'] = x
+        self.drag_data['y'] = y
+        
+        self.redraw_all()
+        
+    def on_canvas_release(self, event):
+        """마우스 릴리즈 이벤트"""
+        self.drag_data['item'] = None
+        
+    def on_canvas_mousewheel(self, event):
+        """마우스 휠 스크롤 이벤트"""
+        if event.num == 4 or event.delta > 0:
+            self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5 or event.delta < 0:
+            self.canvas.yview_scroll(1, "units")
+    
+    def cancel_connection(self, event=None):
+        """연결 모드 취소 (ESC 키)"""
+        if self.connection_start is not None:
+            display_name = self.get_block_display_name(self.connection_start)
+            self.end_connection_mode()
+            self.status_var.set(f"❌ {display_name}에서 시작한 연결이 취소되었습니다.")
+    
+    def get_block_display_name(self, block):
+        """블록의 표시 이름 반환 (Free Block의 경우 커스텀 이름)"""
+        if block.type == 'FREE' and block.custom_name:
+            return block.custom_name
+        return self.BLOCK_TYPES[block.type]['name']
+            
+    def delete_connection(self, connection):
+        """연결선 삭제"""
+        from_block = next((b for b in self.blocks if b.id == connection.from_block), None)
+        to_block = next((b for b in self.blocks if b.id == connection.to_block), None)
+        
+        if from_block and to_block:
+            from_name = self.get_block_display_name(from_block)
+            to_name = self.get_block_display_name(to_block)
+            
+            if messagebox.askyesno("연결 삭제", f"{from_name} → {to_name}\n이 연결을 삭제하시겠습니까?"):
+                self.connections = [c for c in self.connections if c.id != connection.id]
+                self.redraw_all()
+                self.status_var.set("연결이 삭제되었습니다.")
+        
+    def on_canvas_double_click(self, event):
+        """더블클릭 이벤트 - 파라미터 편집"""
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        
+        clicked = self.canvas.find_overlapping(x, y, x, y)
+        
+        for item in clicked:
+            tags = self.canvas.gettags(item)
+            for tag in tags:
+                if tag.startswith('block_'):
+                    block_id = int(tag.split('_')[1])
+                    block = next((b for b in self.blocks if b.id == block_id), None)
+                    
+                    if block:
+                        self.edit_block_parameters(block)
+                        return
+                        
+    def on_canvas_right_click(self, event):
+        """우클릭 이벤트 - 컨텍스트 메뉴"""
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        
+        clicked = self.canvas.find_overlapping(x, y, x, y)
+        
+        for item in clicked:
+            tags = self.canvas.gettags(item)
+            for tag in tags:
+                if tag.startswith('block_'):
+                    block_id = int(tag.split('_')[1])
+                    block = next((b for b in self.blocks if b.id == block_id), None)
+                    
+                    if block:
+                        self.show_context_menu(event, block)
+                        return
+                        
+    def show_context_menu(self, event, block):
+        """컨텍스트 메뉴 표시"""
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="⚙️ 설정", command=lambda: self.edit_block_parameters(block))
+        menu.add_separator()
+        menu.add_command(label="🗑️ 삭제", command=lambda: self.delete_block(block))
+        
+        menu.post(event.x_root, event.y_root)
+        
+    def start_connection(self, block):
+        """연결 시작"""
+        if self.connection_start is None:
+            self.connection_start = block
+            
+            self.canvas.config(cursor=self.connection_cursor, bg='#fff5f5')
+            
+            self.canvas.create_rectangle(
+                block.x - 5, block.y - 5,
+                block.x + block.width + 5, block.y + block.height + 5,
+                outline='#ef4444',
+                width=4,
+                dash=(5, 5),
+                tags="connection_highlight"
+            )
+            
+            display_name = self.get_block_display_name(block)
+            self.status_var.set(f"🔗 {display_name}에서 연결을 시작합니다. 대상 블록을 Shift+클릭하세요. (ESC: 취소)")
+        else:
+            # 연결 완료
+            if self.connection_start.id != block.id:
+                existing_connection = next(
+                    (c for c in self.connections 
+                     if c.from_block == self.connection_start.id and c.to_block == block.id),
+                    None
+                )
+                
+                if existing_connection:
+                    from_name = self.get_block_display_name(self.connection_start)
+                    to_name = self.get_block_display_name(block)
+                    messagebox.showwarning(
+                        "중복 연결", 
+                        f"{from_name} → {to_name}\n이미 이 연결이 존재합니다!"
+                    )
+                    self.status_var.set("⚠️ 중복 연결은 생성할 수 없습니다.")
+                else:
+                    new_conn = ProcessConnection(
+                        conn_id=len(self.connections) + 1,
+                        from_block=self.connection_start.id,
+                        to_block=block.id
+                    )
+                    self.connections.append(new_conn)
+                    self.redraw_all()
+                    self.status_var.set(f"✅ 연결이 완료되었습니다.")
+            else:
+                self.status_var.set("⚠️ 같은 블록끼리는 연결할 수 없습니다.")
+            
+            self.end_connection_mode()
+    
+    def end_connection_mode(self):
+        """연결 모드 종료 및 시각 효과 제거"""
+        self.connection_start = None
+        self.canvas.config(cursor='cross', bg='#f0f0f0')
+        self.canvas.delete("connection_highlight")
+            
+    def delete_block(self, block):
+        """블록 삭제"""
+        display_name = self.get_block_display_name(block)
+        if messagebox.askyesno("삭제 확인", f"{display_name} 블록을 삭제하시겠습니까?"):
+            self.connections = [c for c in self.connections 
+                              if c.from_block != block.id and c.to_block != block.id]
+            
+            self.blocks = [b for b in self.blocks if b.id != block.id]
+            
+            self.redraw_all()
+            self.status_var.set("블록이 삭제되었습니다.")
+            
+    def edit_block_parameters(self, block):
+        """블록 파라미터 편집 다이얼로그"""
+        block_info = self.BLOCK_TYPES[block.type]
+        display_name = self.get_block_display_name(block)
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"{display_name} 설정")
+        dialog.geometry("400x250")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # 아이콘과 제목
+        title_frame = ttk.Frame(dialog)
+        title_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        ttk.Label(title_frame, 
+                 text=f"{block_info['icon']} {display_name}", 
+                 font=("Arial", 14, "bold")).pack()
+        
+        # 입력 필드
+        input_frame = ttk.Frame(dialog, padding=20)
+        input_frame.pack(fill=tk.BOTH, expand=True)
+        
+        row = 0
+        
+        # Free Block인 경우 이름 변경 필드 추가
+        name_var = None
+        if block.type == 'FREE':
+            ttk.Label(input_frame, text="블록 이름:").grid(row=row, column=0, sticky=tk.W, pady=5)
+            name_var = tk.StringVar(value=block.custom_name)
+            ttk.Entry(input_frame, textvariable=name_var, width=20).grid(row=row, column=1, pady=5)
+            row += 1
+        
+        # 처리 시간
+        ttk.Label(input_frame, text="처리 시간 (분):").grid(row=row, column=0, sticky=tk.W, pady=5)
+        time_var = tk.IntVar(value=block.process_time)
+        ttk.Entry(input_frame, textvariable=time_var, width=20).grid(row=row, column=1, pady=5)
+        row += 1
+        
+        # 용량
+        ttk.Label(input_frame, text="처리 용량:").grid(row=row, column=0, sticky=tk.W, pady=5)
+        capacity_var = tk.IntVar(value=block.capacity)
+        ttk.Entry(input_frame, textvariable=capacity_var, width=20).grid(row=row, column=1, pady=5)
+        
+        # 버튼
+        btn_frame = ttk.Frame(dialog, padding=10)
+        btn_frame.pack(fill=tk.X)
+        
+        def save_params():
+            if name_var and block.type == 'FREE':
+                block.custom_name = name_var.get().strip()
+            block.process_time = time_var.get()
+            block.capacity = capacity_var.get()
+            self.redraw_all()
+            dialog.destroy()
+            self.status_var.set("파라미터가 저장되었습니다.")
+        
+        ttk.Button(btn_frame, text="저장", command=save_params).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="취소", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        
+    def run_simulation(self):
+        """시뮬레이션 실행"""
+        if len(self.blocks) == 0:
+            messagebox.showwarning("경고", "공정 블록을 추가해주세요!")
+            return
+        
+        process_flow = self.sort_process_flow()
+        
+        if len(process_flow) == 0:
+            messagebox.showwarning("경고", "블록 간 연결이 필요합니다!")
+            return
+        
+        simulation_data = self.run_batch_simulation(process_flow)
+        
+        if not simulation_data:
+            messagebox.showerror("오류", "시뮬레이션 실행 중 오류가 발생했습니다.")
+            return
+        
+        self.simulation_result = simulation_data
+        
+        self.display_simulation_results()
+        self.status_var.set(f"시뮬레이션 완료 - 총 리드타임: {simulation_data['total_time']:.1f}분")
+    
+    def run_batch_simulation(self, process_flow, total_batches=10):
+        """배치 기반 시뮬레이션 실행"""
+        process_info = {}
+        for block_id in process_flow:
+            block = next((b for b in self.blocks if b.id == block_id), None)
+            if not block:
+                continue
+            
+            display_name = self.get_block_display_name(block)
+            block_info = self.BLOCK_TYPES[block.type]
+            
+            process_info[block_id] = {
+                'name': display_name,
+                'icon': block_info['icon'],
+                'color': block_info['color'],
+                'process_time': block.process_time,
+                'capacity': block.capacity,
+                'completion_times': [],
+                'start_times': [],
+                'waiting_times': [],
+                'idle_times': 0,
+            }
+        
+        # 배치별 시뮬레이션
+        for batch_num in range(total_batches):
+            for idx, block_id in enumerate(process_flow):
+                info = process_info[block_id]
+                
+                if idx == 0:
+                    if batch_num == 0:
+                        start_time = 0
+                    else:
+                        start_time = info['completion_times'][-1]
+                else:
+                    prev_block_id = process_flow[idx - 1]
+                    prev_info = process_info[prev_block_id]
+                    
+                    if batch_num < len(prev_info['completion_times']):
+                        prev_completion = prev_info['completion_times'][batch_num]
+                    else:
+                        prev_completion = 0
+                    
+                    if batch_num > 0 and len(info['completion_times']) > 0:
+                        current_completion = info['completion_times'][-1]
+                        start_time = max(prev_completion, current_completion)
+                    else:
+                        start_time = prev_completion
+                
+                if idx > 0 and batch_num > 0:
+                    prev_block_id = process_flow[idx - 1]
+                    prev_info = process_info[prev_block_id]
+                    if batch_num < len(prev_info['completion_times']):
+                        waiting_time = start_time - prev_info['completion_times'][batch_num]
+                    else:
+                        waiting_time = 0
+                else:
+                    waiting_time = 0
+                
+                info['waiting_times'].append(waiting_time)
+                info['start_times'].append(start_time)
+                
+                completion_time = start_time + info['process_time']
+                info['completion_times'].append(completion_time)
+        
+        bottleneck_info = self.analyze_bottleneck(process_info, process_flow, total_batches)
+        
+        timeline = []
+        total_time = 0
+        
+        for block_id in process_flow:
+            info = process_info[block_id]
+            
+            avg_cycle_time = info['process_time']
+            avg_waiting = sum(info['waiting_times']) / len(info['waiting_times']) if info['waiting_times'] else 0
+            throughput = info['capacity'] / info['process_time'] if info['process_time'] > 0 else 0
+            
+            timeline.append({
+                'block_id': block_id,
+                'name': info['name'],
+                'icon': info['icon'],
+                'color': info['color'],
+                'process_time': info['process_time'],
+                'capacity': info['capacity'],
+                'avg_cycle_time': avg_cycle_time,
+                'avg_waiting': avg_waiting,
+                'throughput': throughput,
+                'total_processed': total_batches * info['capacity'],
+                'start_times': info['start_times'][:5],
+                'completion_times': info['completion_times'][:5],
+            })
+            
+            if info['completion_times']:
+                total_time = max(total_time, info['completion_times'][-1])
+        
+        return {
+            'timeline': timeline,
+            'total_time': total_time,
+            'total_batches': total_batches,
+            'bottleneck': bottleneck_info['bottleneck_name'],
+            'bottleneck_reason': bottleneck_info['reason'],
+            'bottleneck_impact': bottleneck_info['impact'],
+            'process_info': process_info,
+            'process_flow': process_flow,
+        }
+    
+    def analyze_bottleneck(self, process_info, process_flow, total_batches):
+        """병목 공정 분석"""
+        min_throughput = float('inf')
+        bottleneck_id = None
+        bottleneck_name = ""
+        
+        for block_id in process_flow:
+            info = process_info[block_id]
+            throughput = info['capacity'] / info['process_time'] if info['process_time'] > 0 else float('inf')
+            
+            if throughput < min_throughput:
+                min_throughput = throughput
+                bottleneck_id = block_id
+                bottleneck_name = info['name']
+        
+        if bottleneck_id:
+            bottleneck_info = process_info[bottleneck_id]
+            
+            total_waiting = 0
+            for block_id in process_flow:
+                if block_id != bottleneck_id:
+                    total_waiting += sum(process_info[block_id]['waiting_times'])
+            
+            reason = f"처리율 {min_throughput:.3f} 배치/분 (용량 {bottleneck_info['capacity']} / 시간 {bottleneck_info['process_time']}분)"
+            impact = f"다른 공정의 총 대기시간: {total_waiting:.1f}분"
+            
+            return {
+                'bottleneck_id': bottleneck_id,
+                'bottleneck_name': bottleneck_name,
+                'throughput': min_throughput,
+                'reason': reason,
+                'impact': impact,
+            }
+        
+        return {
+            'bottleneck_id': None,
+            'bottleneck_name': '없음',
+            'throughput': 0,
+            'reason': '병목 없음',
+            'impact': '없음',
+        }
+        
+    def sort_process_flow(self):
+        """공정 플로우 위상 정렬"""
+        if len(self.connections) == 0:
+            return [b.id for b in self.blocks]
+        
+        has_incoming = set([c.to_block for c in self.connections])
+        start_nodes = [b.id for b in self.blocks if b.id not in has_incoming]
+        
+        if len(start_nodes) == 0:
+            return [b.id for b in self.blocks]
+        
+        sorted_nodes = []
+        visited = set()
+        
+        def dfs(node_id):
+            if node_id in visited:
+                return
+            visited.add(node_id)
+            
+            outgoing = [c.to_block for c in self.connections if c.from_block == node_id]
+            for next_node in outgoing:
+                dfs(next_node)
+            
+            sorted_nodes.insert(0, node_id)
+        
+        for start in start_nodes:
+            dfs(start)
+        
+        return sorted_nodes
+        
+    def display_simulation_results(self):
+        """시뮬레이션 결과 표시"""
+        if not self.simulation_result:
+            return
+        
+        result = self.simulation_result
+        
+        # 요약 탭
+        self.summary_text.delete(1.0, tk.END)
+        self.summary_text.insert(tk.END, "=" * 40 + "\n")
+        self.summary_text.insert(tk.END, "   배치 시뮬레이션 결과\n")
+        self.summary_text.insert(tk.END, "=" * 40 + "\n\n")
+        self.summary_text.insert(tk.END, f"총 시뮬레이션 시간: {result['total_time']:.1f}분\n")
+        self.summary_text.insert(tk.END, f"총 배치 수: {result['total_batches']}개\n\n")
+        
+        self.summary_text.insert(tk.END, f"병목 공정: {result['bottleneck']}\n")
+        self.summary_text.insert(tk.END, f"   이유: {result['bottleneck_reason']}\n")
+        self.summary_text.insert(tk.END, f"   영향: {result['bottleneck_impact']}\n\n")
+        
+        self.summary_text.insert(tk.END, f"공정 수: {len(result['timeline'])}개\n")
+        
+        avg_cycle = result['total_time'] / result['total_batches'] if result['total_batches'] > 0 else 0
+        self.summary_text.insert(tk.END, f"평균 사이클 타임: {avg_cycle:.1f}분/배치\n")
+        
+        # 타임라인 그래프
+        self.timeline_canvas.delete("all")
+        y_offset = 30
+        
+        self.timeline_canvas.create_text(
+            10, y_offset,
+            text="공정 흐름 및 성능",
+            anchor=tk.W,
+            font=("Arial", 11, "bold")
+        )
+        y_offset += 30
+        
+        for idx, item in enumerate(result['timeline']):
+            self.timeline_canvas.create_text(
+                10, y_offset,
+                text=f"{idx+1}. {item['icon']} {item['name']}",
+                anchor=tk.W,
+                font=("Arial", 9, "bold")
+            )
+            
+            info_text = f"시간: {item['process_time']}분 | 용량: {item['capacity']} | 처리율: {item['throughput']:.3f}"
+            self.timeline_canvas.create_text(
+                10, y_offset + 15,
+                text=info_text,
+                anchor=tk.W,
+                font=("Arial", 8),
+                fill='gray'
+            )
+            
+            if item['avg_waiting'] > 0.1:
+                self.timeline_canvas.create_text(
+                    10, y_offset + 30,
+                    text=f"평균 대기: {item['avg_waiting']:.1f}분",
+                    anchor=tk.W,
+                    font=("Arial", 8),
+                    fill='#ef4444'
+                )
+            
+            bar_x = 200
+            bar_width = 120
+            bar_height = 20
+            
+            max_throughput = max([t['throughput'] for t in result['timeline']])
+            if max_throughput > 0:
+                bar_length = (item['throughput'] / max_throughput) * bar_width
+            else:
+                bar_length = 0
+            
+            self.timeline_canvas.create_rectangle(
+                bar_x, y_offset,
+                bar_x + bar_width, y_offset + bar_height,
+                fill='#e5e7eb',
+                outline='#d1d5db'
+            )
+            
+            is_bottleneck = item['name'] == result['bottleneck']
+            self.timeline_canvas.create_rectangle(
+                bar_x, y_offset,
+                bar_x + bar_length, y_offset + bar_height,
+                fill='#ef4444' if is_bottleneck else item['color'],
+                outline='white',
+                width=2
+            )
+            
+            if is_bottleneck:
+                self.timeline_canvas.create_text(
+                    bar_x + bar_width + 10, y_offset + bar_height / 2,
+                    text="병목",
+                    anchor=tk.W,
+                    font=("Arial", 9, "bold"),
+                    fill='red'
+                )
+            
+            if idx < len(result['timeline']) - 1:
+                self.timeline_canvas.create_text(
+                    10, y_offset + 50,
+                    text="    ↓",
+                    anchor=tk.W,
+                    font=("Arial", 12),
+                    fill='#64748b'
+                )
+                y_offset += 70
+            else:
+                y_offset += 50
+        
+        self.timeline_canvas.configure(scrollregion=self.timeline_canvas.bbox("all"))
+        
+        # 분석 탭
+        self.analysis_text.delete(1.0, tk.END)
+        self.analysis_text.insert(tk.END, "=" * 70 + "\n")
+        self.analysis_text.insert(tk.END, "              배치 시뮬레이션 상세 분석\n")
+        self.analysis_text.insert(tk.END, "=" * 70 + "\n\n")
+        
+        self.analysis_text.insert(tk.END, "공정 흐름\n")
+        self.analysis_text.insert(tk.END, "-" * 70 + "\n")
+        
+        flow_diagram = " → ".join([f"{item['icon']}{item['name']}" for item in result['timeline']])
+        self.analysis_text.insert(tk.END, f"{flow_diagram}\n\n")
+        
+        self.analysis_text.insert(tk.END, "공정별 상세 분석\n")
+        self.analysis_text.insert(tk.END, "-" * 70 + "\n")
+        
+        for idx, item in enumerate(result['timeline'], 1):
+            self.analysis_text.insert(tk.END, f"\n{idx}. {item['icon']} {item['name']}\n")
+            self.analysis_text.insert(tk.END, f"   기본 정보:\n")
+            self.analysis_text.insert(tk.END, f"   • 처리 시간: {item['process_time']}분\n")
+            self.analysis_text.insert(tk.END, f"   • 처리 용량: {item['capacity']}개/회\n")
+            self.analysis_text.insert(tk.END, f"   • 처리율: {item['throughput']:.3f} 배치/분\n")
+            self.analysis_text.insert(tk.END, f"   • 총 처리량: {item['total_processed']}개\n")
+            
+            self.analysis_text.insert(tk.END, f"\n   성능 지표:\n")
+            self.analysis_text.insert(tk.END, f"   • 평균 사이클 타임: {item['avg_cycle_time']:.1f}분\n")
+            self.analysis_text.insert(tk.END, f"   • 평균 대기 시간: {item['avg_waiting']:.1f}분\n")
+            
+            if item['name'] == result['bottleneck']:
+                self.analysis_text.insert(tk.END, f"\n   병목 공정!\n")
+                self.analysis_text.insert(tk.END, f"   → {result['bottleneck_reason']}\n")
+                self.analysis_text.insert(tk.END, f"   → 전체 공정의 처리 속도를 제한하는 구간입니다.\n")
+            
+            if len(item['start_times']) > 0:
+                self.analysis_text.insert(tk.END, f"\n   배치별 타임라인 (처음 3개):\n")
+                for batch_idx in range(min(3, len(item['start_times']))):
+                    start = item['start_times'][batch_idx]
+                    end = item['completion_times'][batch_idx]
+                    self.analysis_text.insert(tk.END, 
+                        f"   배치 {batch_idx+1}: {start:.1f}분 → {end:.1f}분 ({end-start:.1f}분)\n")
+        
+        self.analysis_text.insert(tk.END, "\n\n병목 분석 및 개선 제안\n")
+        self.analysis_text.insert(tk.END, "=" * 70 + "\n")
+        
+        self.analysis_text.insert(tk.END, f"\n병목 공정: {result['bottleneck']}\n")
+        self.analysis_text.insert(tk.END, f"   • {result['bottleneck_reason']}\n")
+        self.analysis_text.insert(tk.END, f"   • {result['bottleneck_impact']}\n\n")
+        
+        self.analysis_text.insert(tk.END, "개선 방안:\n")
+        self.analysis_text.insert(tk.END, f"1. 병목 공정의 처리 시간 단축\n")
+        self.analysis_text.insert(tk.END, f"   - 공정 자동화 검토\n")
+        self.analysis_text.insert(tk.END, f"   - 작업 방법 개선\n\n")
+        
+        self.analysis_text.insert(tk.END, f"2. 병목 공정의 용량 증대\n")
+        self.analysis_text.insert(tk.END, f"   - 설비 대수 증설\n")
+        self.analysis_text.insert(tk.END, f"   - 병렬 처리 라인 구축\n\n")
+        
+    def save_scenario(self):
+        """시나리오 저장"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON 파일", "*.json"), ("모든 파일", "*.*")],
+            title="시나리오 저장"
+        )
+        
+        if filename:
+            try:
+                data = {
+                    'blocks': [
+                        {
+                            'id': b.id,
+                            'type': b.type,
+                            'x': b.x,
+                            'y': b.y,
+                            'process_time': b.process_time,
+                            'capacity': b.capacity,
+                            'custom_name': b.custom_name
+                        }
+                        for b in self.blocks
+                    ],
+                    'connections': [
+                        {
+                            'id': c.id,
+                            'from': c.from_block,
+                            'to': c.to_block
+                        }
+                        for c in self.connections
+                    ]
+                }
+                
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                
+                messagebox.showinfo("저장 완료", f"시나리오가 저장되었습니다:\n{filename}")
+                self.status_var.set(f"시나리오 저장됨: {filename}")
+            except Exception as e:
+                messagebox.showerror("저장 오류", f"저장 중 오류가 발생했습니다:\n{str(e)}")
+                
+    def load_scenario(self):
+        """시나리오 불러오기"""
+        filename = filedialog.askopenfilename(
+            filetypes=[("JSON 파일", "*.json"), ("모든 파일", "*.*")],
+            title="시나리오 불러오기"
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                self.blocks = []
+                self.connections = []
+                
+                for b_data in data['blocks']:
+                    block = ProcessBlock(
+                        block_id=b_data['id'],
+                        block_type=b_data['type'],
+                        x=b_data['x'],
+                        y=b_data['y'],
+                        process_time=b_data['process_time'],
+                        capacity=b_data['capacity'],
+                        custom_name=b_data.get('custom_name', '')
+                    )
+                    self.blocks.append(block)
+                
+                for c_data in data['connections']:
+                    conn = ProcessConnection(
+                        conn_id=c_data['id'],
+                        from_block=c_data['from'],
+                        to_block=c_data['to']
+                    )
+                    self.connections.append(conn)
+                
+                self.redraw_all()
+                messagebox.showinfo("불러오기 완료", "시나리오가 불러와졌습니다!")
+                self.status_var.set(f"시나리오 불러옴: {filename}")
+            except Exception as e:
+                messagebox.showerror("불러오기 오류", f"불러오기 중 오류가 발생했습니다:\n{str(e)}")
+                
+    def clear_all(self):
+        """전체 초기화"""
+        if messagebox.askyesno("초기화 확인", "모든 블록과 연결을 삭제하시겠습니까?"):
+            self.blocks = []
+            self.connections = []
+            self.simulation_result = None
+            self.connection_start = None
+            
+            self.canvas.delete("all")
+            
+            self.summary_text.delete(1.0, tk.END)
+            self.timeline_canvas.delete("all")
+            self.analysis_text.delete(1.0, tk.END)
+            
+            self.status_var.set("초기화 완료")
+            
+    def run(self):
+        """애플리케이션 실행"""
+        try:
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            self.root.quit()
+
+# 애플리케이션 실행
+if __name__ == "__main__":
+    try:
+        app = ProcessSimulator()
+        app.run()
+    except Exception as e:
+        print(f"애플리케이션 시작 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        input("엔터 키를 눌러 종료하세요...")

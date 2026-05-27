@@ -9,8 +9,13 @@ class ProcessBlock:
     type: str
     x: float
     y: float
-    process_time: float
-    capacity: int = 1
+    process_time_per_ea: float = 30.0
+    concurrent_capacity: int = 1
+    material_name: str = "원자재"
+    input_quantity: int = 10
+    input_time: float = 0.0
+    transport_capacity: int = 1
+    transport_time: float = 1.0
     custom_name: str = ""
     width: int = 150
     height: int = 80
@@ -43,8 +48,13 @@ class Scenario:
         block_type: str,
         x: float,
         y: float,
-        process_time: float,
-        capacity: int = 1,
+        process_time_per_ea: float = 30.0,
+        concurrent_capacity: int = 1,
+        material_name: str = "원자재",
+        input_quantity: int = 10,
+        input_time: float = 0.0,
+        transport_capacity: int = 1,
+        transport_time: float = 1.0,
         custom_name: str = "",
         block_id: int | None = None,
     ) -> ProcessBlock:
@@ -53,8 +63,13 @@ class Scenario:
             type=block_type,
             x=x,
             y=y,
-            process_time=process_time,
-            capacity=capacity,
+            process_time_per_ea=process_time_per_ea,
+            concurrent_capacity=concurrent_capacity,
+            material_name=material_name,
+            input_quantity=input_quantity,
+            input_time=input_time,
+            transport_capacity=transport_capacity,
+            transport_time=transport_time,
             custom_name=custom_name,
         )
         self.blocks.append(block)
@@ -77,9 +92,12 @@ class Scenario:
         if from_block == to_block:
             raise ValueError("같은 블록끼리는 연결할 수 없습니다.")
 
-        block_ids = {block.id for block in self.blocks}
-        if from_block not in block_ids or to_block not in block_ids:
+        block_by_id = {block.id: block for block in self.blocks}
+        if from_block not in block_by_id or to_block not in block_by_id:
             raise ValueError("연결하려는 블록이 시나리오에 있어야 합니다.")
+
+        if block_by_id[to_block].type == "INPUT":
+            raise ValueError("원자재 투입 블록으로 들어가는 연결은 만들 수 없습니다.")
 
         duplicate = any(
             connection.from_block == from_block and connection.to_block == to_block

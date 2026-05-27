@@ -2,47 +2,68 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from heapq import heappop, heappush
+from math import ceil
+from typing import Callable
 
 from .models import ProcessBlock, ProcessConnection
+
+
+@dataclass(frozen=True)
+class BundleRecord:
+    block_id: int
+    bundle_id: int
+    material_name: str
+    quantity: int
+    source_block_id: int
+    arrival_time: float
+    start_time: float
+    completion_time: float
+    transport_trips: int = 0
 
 
 @dataclass
 class BlockResult:
     block_id: int
-    process_time: float
-    capacity: int
+    operation_time: float
+    operation_quantity: int
     start_times: list[float]
     completion_times: list[float]
     waiting_times: list[float]
     throughput: float
     avg_waiting: float
     total_processed: int
+    processed_bundle_count: int
+    transport_trips: int
+    bundles: list[BundleRecord]
 
 
 @dataclass
 class SimulationResult:
     timeline: list[BlockResult]
     total_time: float
-    units_per_source: int
-    total_generated_units: int
-    source_count: int
+    total_input_quantity: int
+    final_output_quantity: int
     bottleneck_id: int | None
     bottleneck_throughput: float
     process_flow: list[int]
 
 
 @dataclass(frozen=True)
-class _UnitArrival:
+class _Bundle:
+    bundle_id: int
+    material_name: str
+    quantity: int
+    source_block_id: int
     arrival_time: float
-    parent_topo_index: int
-    parent_completion_order: int
-    source_order: int
+    sequence: int
 
 
 @dataclass(frozen=True)
-class _UnitCompletion:
+class _ProcessedBundle:
+    bundle: _Bundle
+    start_time: float
     completion_time: float
-    completion_order: int
+    transport_trips: int = 0
 
 
 def topological_flow(
@@ -56,105 +77,99 @@ def topological_flow(
 def simulate(
     blocks: list[ProcessBlock],
     connections: list[ProcessConnection],
-    units_per_source: int = 10,
 ) -> SimulationResult:
-    _validate_inputs(blocks, units_per_source)
+    _validate_block_fields(blocks)
     process_flow = _validate_and_topological_flow(blocks, connections)
+    _validate_bundle_graph(blocks, connections)
+
+    if not blocks:
+        return SimulationResult(
+            timeline=[],
+            total_time=0,
+            total_input_quantity=0,
+            final_output_quantity=0,
+            bottleneck_id=None,
+            bottleneck_throughput=0,
+            process_flow=[],
+        )
+
     block_by_id = {block.id: block for block in blocks}
     outgoing_by_id = _outgoing_by_id(connections)
-    incoming_ids = {connection.to_block for connection in connections}
-    source_ids = [block.id for block in blocks if block.id not in incoming_ids]
-    total_generated_units = len(source_ids) * units_per_source
+    arrivals_by_block: dict[int, list[_Bundle]] = {block.id: [] for block in blocks}
+    results_by_block: dict[int, BlockResult] = {}
+    bundle_sequence = 0
+    next_bundle_id = 1
 
-    arrivals_by_block: dict[int, list[_UnitArrival]] = {
-        block.id: [] for block in blocks
-    }
-    metrics_by_block: dict[int, dict[str, list[float]]] = {
-        block.id: {
-            "start_times": [],
-            "completion_times": [],
-            "waiting_times": [],
-        }
-        for block in blocks
-    }
-    topo_index_by_id = {block_id: index for index, block_id in enumerate(process_flow)}
+    def next_sequence() -> int:
+        nonlocal bundle_sequence
+        bundle_sequence += 1
+        return bundle_sequence
 
-    for source_order, block_id in enumerate(source_ids):
-        topo_index = topo_index_by_id[block_id]
-        arrivals_by_block[block_id] = [
-            _UnitArrival(0, topo_index, unit_index, source_order)
-            for unit_index in range(units_per_source)
-        ]
+    def new_bundle_id() -> int:
+        nonlocal next_bundle_id
+        bundle_id = next_bundle_id
+        next_bundle_id += 1
+        return bundle_id
 
     for block_id in process_flow:
         block = block_by_id[block_id]
-        arrivals = sorted(
-            arrivals_by_block[block_id],
-            key=lambda item: (
-                item.arrival_time,
-                item.parent_topo_index,
-                item.parent_completion_order,
-                item.source_order,
-            ),
-        )
-        metrics = metrics_by_block[block_id]
-        slot_heap = [(0.0, slot_index) for slot_index in range(block.capacity)]
-        completions: list[_UnitCompletion] = []
+        if _is_input(block):
+            processed = _process_input_block(block, new_bundle_id, next_sequence)
+        elif _is_hoist(block):
+            processed = _process_hoist_block(block, arrivals_by_block[block_id])
+        else:
+            processed = _process_work_block(block, arrivals_by_block[block_id])
 
-        for completion_order, arrival in enumerate(arrivals):
-            available_time, slot_index = heappop(slot_heap)
-            start_time = max(arrival.arrival_time, available_time)
-            completion_time = start_time + block.process_time
-            waiting_time = start_time - arrival.arrival_time
-
-            metrics["start_times"].append(start_time)
-            metrics["completion_times"].append(completion_time)
-            metrics["waiting_times"].append(waiting_time)
-            completions.append(_UnitCompletion(completion_time, completion_order))
-            heappush(slot_heap, (completion_time, slot_index))
-
-        completions.sort(key=lambda item: (item.completion_time, item.completion_order))
-        _route_completions(
-            parent_id=block_id,
-            completions=completions,
+        results_by_block[block_id] = _build_block_result(block, processed)
+        _route_processed_bundles(
+            processed=processed,
             outgoing_connections=outgoing_by_id.get(block_id, []),
             block_by_id=block_by_id,
-            topo_index_by_id=topo_index_by_id,
             arrivals_by_block=arrivals_by_block,
+            new_bundle_id=new_bundle_id,
+            next_sequence=next_sequence,
         )
 
-    timeline = [
-        _build_block_result(block_by_id[block_id], metrics_by_block[block_id])
-        for block_id in process_flow
-    ]
-    bottleneck_id, bottleneck_throughput = _analyze_bottleneck(timeline)
+    timeline = [results_by_block[block_id] for block_id in process_flow]
+    bottleneck_id, bottleneck_throughput = _analyze_bottleneck(timeline, block_by_id)
 
     return SimulationResult(
         timeline=timeline,
         total_time=_total_sink_time(timeline, connections),
-        units_per_source=units_per_source,
-        total_generated_units=total_generated_units,
-        source_count=len(source_ids),
+        total_input_quantity=sum(
+            block.input_quantity for block in blocks if _is_input(block)
+        ),
+        final_output_quantity=_final_output_quantity(timeline, connections),
         bottleneck_id=bottleneck_id,
         bottleneck_throughput=bottleneck_throughput,
         process_flow=process_flow,
     )
 
 
-def _validate_inputs(blocks: list[ProcessBlock], units_per_source: int) -> None:
-    if units_per_source < 0:
-        raise ValueError("시작 공정별 투입 수량(EA)은 0 이상이어야 합니다.")
-
+def _validate_block_fields(blocks: list[ProcessBlock]) -> None:
     block_ids: set[int] = set()
     for block in blocks:
         if block.id in block_ids:
             raise ValueError(f"중복된 블록 ID입니다: {block.id}.")
         block_ids.add(block.id)
 
-        if block.process_time <= 0:
-            raise ValueError("처리 시간(분/EA)은 0보다 커야 합니다.")
-        if block.capacity <= 0:
-            raise ValueError("동시 처리 수량(EA)은 1 이상이어야 합니다.")
+        if _is_input(block):
+            if not block.material_name.strip():
+                raise ValueError("원자재명은 비워둘 수 없습니다.")
+            if block.input_quantity < 0:
+                raise ValueError("투입 원자재 수(EA)는 0 이상이어야 합니다.")
+            if block.input_time < 0:
+                raise ValueError("투입 시간(분)은 0 이상이어야 합니다.")
+        elif _is_hoist(block):
+            if block.transport_capacity <= 0:
+                raise ValueError("1회 운반 수량(EA)은 1 이상이어야 합니다.")
+            if block.transport_time <= 0:
+                raise ValueError("1회 이동 시간(분)은 0보다 커야 합니다.")
+        else:
+            if block.process_time_per_ea <= 0:
+                raise ValueError("처리 시간(분/EA)은 0보다 커야 합니다.")
+            if block.concurrent_capacity <= 0:
+                raise ValueError("동시 가공 수량(EA)은 1 이상이어야 합니다.")
 
 
 def _validate_and_topological_flow(
@@ -210,6 +225,29 @@ def _validate_and_topological_flow(
     return process_flow
 
 
+def _validate_bundle_graph(
+    blocks: list[ProcessBlock],
+    connections: list[ProcessConnection],
+) -> None:
+    incoming_count = {block.id: 0 for block in blocks}
+    block_by_id = {block.id: block for block in blocks}
+
+    for connection in connections:
+        child = block_by_id[connection.to_block]
+        if _is_input(child):
+            raise ValueError("원자재 투입 블록으로 들어가는 연결은 허용되지 않습니다.")
+        incoming_count[connection.to_block] += 1
+
+    for block in blocks:
+        if _is_input(block):
+            if incoming_count[block.id] > 0:
+                raise ValueError("원자재 투입 블록은 입력 연결을 가질 수 없습니다.")
+        elif incoming_count[block.id] == 0:
+            raise ValueError(
+                f"{block.id}번 공정/호이스트 블록은 입력 연결 없이 시작할 수 없습니다."
+            )
+
+
 def _outgoing_by_id(
     connections: list[ProcessConnection],
 ) -> dict[int, list[ProcessConnection]]:
@@ -219,60 +257,216 @@ def _outgoing_by_id(
     return outgoing
 
 
-def _route_completions(
-    parent_id: int,
-    completions: list[_UnitCompletion],
+def _process_input_block(
+    block: ProcessBlock,
+    new_bundle_id: Callable[[], int],
+    next_sequence: Callable[[], int],
+) -> list[_ProcessedBundle]:
+    if block.input_quantity == 0:
+        return []
+
+    bundle = _Bundle(
+        bundle_id=new_bundle_id(),
+        material_name=block.material_name,
+        quantity=block.input_quantity,
+        source_block_id=block.id,
+        arrival_time=0,
+        sequence=next_sequence(),
+    )
+    return [
+        _ProcessedBundle(
+            bundle=bundle,
+            start_time=0,
+            completion_time=float(block.input_time),
+        )
+    ]
+
+
+def _process_hoist_block(
+    block: ProcessBlock,
+    arrivals: list[_Bundle],
+) -> list[_ProcessedBundle]:
+    current_time = 0.0
+    processed: list[_ProcessedBundle] = []
+
+    for bundle in _sort_bundles(arrivals):
+        start_time = max(current_time, bundle.arrival_time)
+        trips = ceil(bundle.quantity / block.transport_capacity)
+        completion_time = start_time + trips * block.transport_time
+        processed.append(
+            _ProcessedBundle(
+                bundle=bundle,
+                start_time=start_time,
+                completion_time=completion_time,
+                transport_trips=trips,
+            )
+        )
+        current_time = completion_time
+
+    return processed
+
+
+def _process_work_block(
+    block: ProcessBlock,
+    arrivals: list[_Bundle],
+) -> list[_ProcessedBundle]:
+    current_time = 0.0
+    pending = _sort_bundles(arrivals)
+    processed: list[_ProcessedBundle] = []
+
+    while pending:
+        available = [bundle for bundle in pending if bundle.arrival_time <= current_time]
+        if not available:
+            current_time = max(current_time, pending[0].arrival_time)
+            available = [bundle for bundle in pending if bundle.arrival_time <= current_time]
+
+        material_name = available[0].material_name
+        same_material = [
+            bundle for bundle in pending if bundle.material_name == material_name
+        ]
+        same_material_ids = {bundle.bundle_id for bundle in same_material}
+
+        for bundle in same_material:
+            start_time = max(current_time, bundle.arrival_time)
+            duration = (
+                ceil(bundle.quantity / block.concurrent_capacity)
+                * block.process_time_per_ea
+            )
+            completion_time = start_time + duration
+            processed.append(
+                _ProcessedBundle(
+                    bundle=bundle,
+                    start_time=start_time,
+                    completion_time=completion_time,
+                )
+            )
+            current_time = completion_time
+
+        pending = [
+            bundle for bundle in pending if bundle.bundle_id not in same_material_ids
+        ]
+
+    return processed
+
+
+def _route_processed_bundles(
+    processed: list[_ProcessedBundle],
     outgoing_connections: list[ProcessConnection],
     block_by_id: dict[int, ProcessBlock],
-    topo_index_by_id: dict[int, int],
-    arrivals_by_block: dict[int, list[_UnitArrival]],
+    arrivals_by_block: dict[int, list[_Bundle]],
+    new_bundle_id: Callable[[], int],
+    next_sequence: Callable[[], int],
 ) -> None:
     if not outgoing_connections:
         return
 
-    route_pattern = [
+    for processed_bundle in processed:
+        bundle = processed_bundle.bundle
+        if len(outgoing_connections) == 1:
+            child_id = outgoing_connections[0].to_block
+            arrivals_by_block[child_id].append(
+                _Bundle(
+                    bundle_id=bundle.bundle_id,
+                    material_name=bundle.material_name,
+                    quantity=bundle.quantity,
+                    source_block_id=bundle.source_block_id,
+                    arrival_time=processed_bundle.completion_time,
+                    sequence=next_sequence(),
+                )
+            )
+            continue
+
+        for child_id, quantity in _split_quantity_by_weights(
+            bundle.quantity,
+            outgoing_connections,
+            block_by_id,
+        ):
+            if quantity <= 0:
+                continue
+            arrivals_by_block[child_id].append(
+                _Bundle(
+                    bundle_id=new_bundle_id(),
+                    material_name=bundle.material_name,
+                    quantity=quantity,
+                    source_block_id=bundle.source_block_id,
+                    arrival_time=processed_bundle.completion_time,
+                    sequence=next_sequence(),
+                )
+            )
+
+
+def _split_quantity_by_weights(
+    quantity: int,
+    outgoing_connections: list[ProcessConnection],
+    block_by_id: dict[int, ProcessBlock],
+) -> list[tuple[int, int]]:
+    pattern = [
         connection.to_block
         for connection in outgoing_connections
-        for _ in range(block_by_id[connection.to_block].capacity)
+        for _ in range(_routing_weight(block_by_id[connection.to_block]))
     ]
-    parent_topo_index = topo_index_by_id[parent_id]
+    counts = {connection.to_block: 0 for connection in outgoing_connections}
+    for index in range(quantity):
+        counts[pattern[index % len(pattern)]] += 1
+    return [(connection.to_block, counts[connection.to_block]) for connection in outgoing_connections]
 
-    for route_index, completion in enumerate(completions):
-        child_id = route_pattern[route_index % len(route_pattern)]
-        arrivals_by_block[child_id].append(
-            _UnitArrival(
-                arrival_time=completion.completion_time,
-                parent_topo_index=parent_topo_index,
-                parent_completion_order=completion.completion_order,
-                source_order=route_index,
-            )
-        )
+
+def _routing_weight(block: ProcessBlock) -> int:
+    if _is_input(block):
+        raise ValueError("원자재 투입 블록으로는 분기 라우팅할 수 없습니다.")
+    if _is_hoist(block):
+        return block.transport_capacity
+    return block.concurrent_capacity
 
 
 def _build_block_result(
     block: ProcessBlock,
-    metrics: dict[str, list[float]],
+    processed: list[_ProcessedBundle],
 ) -> BlockResult:
-    waiting_times = metrics["waiting_times"]
-    start_times = metrics["start_times"]
-    completion_times = metrics["completion_times"]
-    throughput = block.capacity / block.process_time
+    records = [
+        BundleRecord(
+            block_id=block.id,
+            bundle_id=item.bundle.bundle_id,
+            material_name=item.bundle.material_name,
+            quantity=item.bundle.quantity,
+            source_block_id=item.bundle.source_block_id,
+            arrival_time=item.bundle.arrival_time,
+            start_time=item.start_time,
+            completion_time=item.completion_time,
+            transport_trips=item.transport_trips,
+        )
+        for item in processed
+    ]
+    waiting_times = [record.start_time - record.arrival_time for record in records]
+    start_times = [record.start_time for record in records]
+    completion_times = [record.completion_time for record in records]
+    transport_trips = sum(record.transport_trips for record in records)
 
     return BlockResult(
         block_id=block.id,
-        process_time=float(block.process_time),
-        capacity=int(block.capacity),
-        start_times=list(start_times),
-        completion_times=list(completion_times),
-        waiting_times=list(waiting_times),
-        throughput=throughput,
+        operation_time=_operation_time(block),
+        operation_quantity=_operation_quantity(block),
+        start_times=start_times,
+        completion_times=completion_times,
+        waiting_times=waiting_times,
+        throughput=_throughput(block),
         avg_waiting=sum(waiting_times) / len(waiting_times) if waiting_times else 0,
-        total_processed=len(completion_times),
+        total_processed=sum(record.quantity for record in records),
+        processed_bundle_count=len(records),
+        transport_trips=transport_trips,
+        bundles=records,
     )
 
 
-def _analyze_bottleneck(timeline: list[BlockResult]) -> tuple[int | None, float]:
-    processed = [item for item in timeline if item.total_processed > 0]
+def _analyze_bottleneck(
+    timeline: list[BlockResult],
+    block_by_id: dict[int, ProcessBlock],
+) -> tuple[int | None, float]:
+    processed = [
+        item
+        for item in timeline
+        if item.total_processed > 0 and not _is_input(block_by_id[item.block_id])
+    ]
     if not processed:
         return None, 0
 
@@ -290,8 +484,66 @@ def _total_sink_time(
     parent_ids = {connection.from_block for connection in connections}
     sink_ids = {item.block_id for item in timeline if item.block_id not in parent_ids}
     sink_completion_times = [
-        item.completion_times[-1]
+        max(item.completion_times)
         for item in timeline
         if item.block_id in sink_ids and item.completion_times
     ]
     return max(sink_completion_times, default=0)
+
+
+def _final_output_quantity(
+    timeline: list[BlockResult],
+    connections: list[ProcessConnection],
+) -> int:
+    parent_ids = {connection.from_block for connection in connections}
+    return sum(
+        item.total_processed
+        for item in timeline
+        if item.block_id not in parent_ids
+    )
+
+
+def _sort_bundles(bundles: list[_Bundle]) -> list[_Bundle]:
+    return sorted(
+        bundles,
+        key=lambda bundle: (
+            bundle.arrival_time,
+            bundle.sequence,
+            bundle.source_block_id,
+            bundle.bundle_id,
+        ),
+    )
+
+
+def _operation_time(block: ProcessBlock) -> float:
+    if _is_input(block):
+        return float(block.input_time)
+    if _is_hoist(block):
+        return float(block.transport_time)
+    return float(block.process_time_per_ea)
+
+
+def _operation_quantity(block: ProcessBlock) -> int:
+    if _is_input(block):
+        return int(block.input_quantity)
+    if _is_hoist(block):
+        return int(block.transport_capacity)
+    return int(block.concurrent_capacity)
+
+
+def _throughput(block: ProcessBlock) -> float:
+    if _is_input(block):
+        if block.input_time == 0:
+            return float("inf")
+        return block.input_quantity / block.input_time
+    if _is_hoist(block):
+        return block.transport_capacity / block.transport_time
+    return block.concurrent_capacity / block.process_time_per_ea
+
+
+def _is_input(block: ProcessBlock) -> bool:
+    return block.type == "INPUT"
+
+
+def _is_hoist(block: ProcessBlock) -> bool:
+    return block.type == "HOIST"

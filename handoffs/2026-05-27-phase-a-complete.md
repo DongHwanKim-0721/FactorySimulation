@@ -21,6 +21,12 @@ GitHub issue state at handoff time:
 - Implementation issues `#6` through `#11` closed as completed
 - No open issues remained
 
+Important update:
+
+- This handoff records the earlier Phase A definition that used an EA-level push scheduler.
+- The active Phase A scope has since been redefined by `docs/prd/phase-a-bundle-hoist-redefinition.md` and GitHub issue `#12`.
+- For new implementation work, treat this file as historical context only.
+
 ## What Changed
 
 Phase A simulation engine replacement is complete. Use these references instead of duplicating implementation details here:

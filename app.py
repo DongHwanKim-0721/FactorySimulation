@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 
 from engine.models import ProcessBlock, ProcessConnection, Scenario
 from engine.scenario_io import load as load_scenario_file
@@ -15,18 +16,50 @@ class BlockType:
     label: str
     color: str
     icon: str
-    default_time: float
+    default_process_time_per_ea: float = 30.0
+    default_concurrent_capacity: int = 1
+    default_input_quantity: int = 10
+    default_input_time: float = 0.0
+    default_transport_capacity: int = 4
+    default_transport_time: float = 3.0
 
 
 BLOCK_TYPES: dict[str, BlockType] = {
-    "INPUT": BlockType("원자재 투입", "#3b82f6", "📥", 30),
+    "INPUT": BlockType("원자재 투입", "#3b82f6", "📥", default_input_quantity=10),
     "STORAGE": BlockType("적재", "#10b981", "📦", 15),
     "CUTTING": BlockType("절단기", "#f59e0b", "✂️", 45),
     "STRAIGHTNESS": BlockType("자동진직도 측정기", "#8b5cf6", "📏", 20),
     "HEAT": BlockType("열처리기", "#ef4444", "🔥", 120),
     "PRESS": BlockType("프레스 교정기", "#ec4899", "⚙️", 60),
+    "HOIST": BlockType("호이스트", "#0f766e", "🏗️", default_transport_capacity=4),
     "FREE": BlockType("Free Block", "#6b7280", "📋", 30),
 }
+
+
+def format_flow_diagram(
+    process_flow: list[int],
+    connections: list[ProcessConnection],
+    block_label: Callable[[int], str],
+    block_icon: Callable[[int], str] | None = None,
+) -> str:
+    flow_ids = set(process_flow)
+    icon_for = block_icon or (lambda _block_id: "")
+
+    def label(block_id: int) -> str:
+        return f"{icon_for(block_id)}{block_label(block_id)}"
+
+    visible_connections = [
+        connection
+        for connection in connections
+        if connection.from_block in flow_ids and connection.to_block in flow_ids
+    ]
+    if visible_connections:
+        return "\n".join(
+            f"{label(connection.from_block)} -> {label(connection.to_block)}"
+            for connection in visible_connections
+        )
+
+    return "\n".join(label(block_id) for block_id in process_flow)
 
 
 class App:
@@ -41,7 +74,6 @@ class App:
 
         self.scenario = Scenario()
         self.last_result: SimulationResult | None = None
-        self.units_per_source_var = tk.IntVar(value=10)
         self.connection_start_id: int | None = None
         self.status_var = tk.StringVar(value="준비 완료")
 
@@ -62,12 +94,6 @@ class App:
 
         button_frame = ttk.Frame(toolbar)
         button_frame.pack(side=tk.RIGHT, padx=10)
-        ttk.Label(button_frame, text="시작 공정별 투입 수량(EA)").pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        ttk.Entry(button_frame, textvariable=self.units_per_source_var, width=6).pack(
-            side=tk.LEFT, padx=(0, 8)
-        )
         ttk.Button(button_frame, text="시뮬레이션 실행", command=self.run_simulation).pack(
             side=tk.LEFT, padx=2
         )
@@ -118,7 +144,12 @@ class App:
             block_type=block_type,
             x=150,
             y=100 + len(self.scenario.blocks) * 100,
-            process_time=block_type_info.default_time,
+            process_time_per_ea=block_type_info.default_process_time_per_ea,
+            concurrent_capacity=block_type_info.default_concurrent_capacity,
+            input_quantity=block_type_info.default_input_quantity,
+            input_time=block_type_info.default_input_time,
+            transport_capacity=block_type_info.default_transport_capacity,
+            transport_time=block_type_info.default_transport_time,
             custom_name=custom_name,
         )
         self.canvas_view.redraw()
@@ -166,7 +197,7 @@ class App:
         block_type_info = BLOCK_TYPES[block.type]
         dialog = tk.Toplevel(self.root)
         dialog.title(f"{self.block_display_name(block)} 설정")
-        dialog.geometry("400x270")
+        dialog.geometry("430x330")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -190,46 +221,118 @@ class App:
             )
             row += 1
 
-        time_var = tk.DoubleVar(value=block.process_time)
-        capacity_var = tk.IntVar(value=block.capacity)
+        material_name_var = tk.StringVar(value=block.material_name)
+        input_quantity_var = tk.IntVar(value=block.input_quantity)
+        input_time_var = tk.DoubleVar(value=block.input_time)
+        process_time_var = tk.DoubleVar(value=block.process_time_per_ea)
+        concurrent_capacity_var = tk.IntVar(value=block.concurrent_capacity)
+        transport_capacity_var = tk.IntVar(value=block.transport_capacity)
+        transport_time_var = tk.DoubleVar(value=block.transport_time)
 
-        ttk.Label(form_frame, text="처리 시간(분/EA):").grid(
-            row=row, column=0, sticky=tk.W, pady=5
-        )
-        ttk.Entry(form_frame, textvariable=time_var, width=22).grid(
-            row=row, column=1, sticky=tk.W, pady=5
-        )
-        row += 1
+        if block.type == "INPUT":
+            ttk.Label(form_frame, text="원자재명:").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=material_name_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
+            row += 1
 
-        ttk.Label(form_frame, text="동시 처리 수량(EA):").grid(
-            row=row, column=0, sticky=tk.W, pady=5
-        )
-        ttk.Entry(form_frame, textvariable=capacity_var, width=22).grid(
-            row=row, column=1, sticky=tk.W, pady=5
-        )
+            ttk.Label(form_frame, text="투입 원자재 수(EA):").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=input_quantity_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
+            row += 1
+
+            ttk.Label(form_frame, text="투입 시간(분):").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=input_time_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
+        elif block.type == "HOIST":
+            ttk.Label(form_frame, text="1회 운반 수량(EA):").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=transport_capacity_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
+            row += 1
+
+            ttk.Label(form_frame, text="1회 이동 시간(분):").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=transport_time_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
+        else:
+            ttk.Label(form_frame, text="처리 시간(분/EA):").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=process_time_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
+            row += 1
+
+            ttk.Label(form_frame, text="동시 가공 수량(EA):").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=concurrent_capacity_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
 
         def save_params() -> None:
             try:
-                process_time = float(time_var.get())
-                capacity = int(capacity_var.get())
+                input_quantity = int(input_quantity_var.get())
+                input_time = float(input_time_var.get())
+                process_time = float(process_time_var.get())
+                concurrent_capacity = int(concurrent_capacity_var.get())
+                transport_capacity = int(transport_capacity_var.get())
+                transport_time = float(transport_time_var.get())
             except tk.TclError:
                 messagebox.showerror(
                     "입력 오류",
-                    "처리 시간과 동시 처리 수량은 숫자로 입력해주세요.",
+                    "수량과 시간은 숫자로 입력해주세요.",
                 )
                 return
 
-            if process_time <= 0 or capacity <= 0:
+            if block.type == "INPUT":
+                material_name = material_name_var.get().strip()
+                if not material_name:
+                    messagebox.showerror("입력 오류", "원자재명을 입력해주세요.")
+                    return
+                if input_quantity < 0 or input_time < 0:
+                    messagebox.showerror(
+                        "입력 오류",
+                        "투입 원자재 수와 투입 시간은 0 이상이어야 합니다.",
+                    )
+                    return
+                block.material_name = material_name
+                block.input_quantity = input_quantity
+                block.input_time = input_time
+            elif block.type == "HOIST":
+                if transport_capacity <= 0 or transport_time <= 0:
+                    messagebox.showerror(
+                        "입력 오류",
+                        "1회 운반 수량은 1 이상, 1회 이동 시간은 0보다 커야 합니다.",
+                    )
+                    return
+                block.transport_capacity = transport_capacity
+                block.transport_time = transport_time
+            elif process_time <= 0 or concurrent_capacity <= 0:
                 messagebox.showerror(
                     "입력 오류",
-                    "처리 시간은 0보다 커야 하고 동시 처리 수량은 1 이상이어야 합니다.",
+                    "처리 시간은 0보다 커야 하고 동시 가공 수량은 1 이상이어야 합니다.",
                 )
                 return
+            else:
+                block.process_time_per_ea = process_time
+                block.concurrent_capacity = concurrent_capacity
 
             if block.type == "FREE":
                 block.custom_name = name_var.get().strip()
-            block.process_time = process_time
-            block.capacity = capacity
             self.canvas_view.redraw()
             dialog.destroy()
             self.status_var.set("파라미터가 저장되었습니다.")
@@ -330,20 +433,9 @@ class App:
             return
 
         try:
-            units_per_source = int(self.units_per_source_var.get())
-        except (tk.TclError, ValueError):
-            messagebox.showerror("입력 오류", "시작 공정별 투입 수량(EA)은 정수로 입력해주세요.")
-            return
-
-        if units_per_source < 0:
-            messagebox.showerror("입력 오류", "시작 공정별 투입 수량(EA)은 0 이상이어야 합니다.")
-            return
-
-        try:
             result = simulate(
                 self.scenario.blocks,
                 self.scenario.connections,
-                units_per_source=units_per_source,
             )
         except ValueError as exc:
             messagebox.showerror("시뮬레이션 오류", str(exc))
@@ -409,6 +501,8 @@ class App:
     def block_display_name(self, block: ProcessBlock | None) -> str:
         if block is None:
             return "Unknown"
+        if block.type == "INPUT" and block.material_name:
+            return f"{BLOCK_TYPES[block.type].label}({block.material_name})"
         if block.type == "FREE" and block.custom_name:
             return block.custom_name
         return BLOCK_TYPES[block.type].label
@@ -433,9 +527,16 @@ class App:
         block = self.find_block(result.bottleneck_id) if result.bottleneck_id else None
         if not block:
             return "병목 없음"
+        if block.type == "HOIST":
+            return (
+                f"이론 처리율 {result.bottleneck_throughput:.3f} EA/분 "
+                f"(1회 운반 수량 {block.transport_capacity} EA / "
+                f"1회 이동 시간 {block.transport_time:g}분)"
+            )
         return (
             f"이론 처리율 {result.bottleneck_throughput:.3f} EA/분 "
-            f"(동시 처리 수량 {block.capacity} EA / 처리 시간 {block.process_time:g}분/EA)"
+            f"(동시 가공 수량 {block.concurrent_capacity} EA / "
+            f"처리 시간 {block.process_time_per_ea:g}분/EA)"
         )
 
     def bottleneck_impact(self, result: SimulationResult) -> str:
@@ -469,9 +570,18 @@ class PaletteView:
         canvas.configure(yscrollcommand=scrollbar.set)
 
         for key, block_type in BLOCK_TYPES.items():
+            if key == "INPUT":
+                detail = f"{block_type.default_input_quantity} EA"
+            elif key == "HOIST":
+                detail = (
+                    f"{block_type.default_transport_capacity} EA/"
+                    f"{block_type.default_transport_time:g}분"
+                )
+            else:
+                detail = f"{block_type.default_process_time_per_ea:g}분/EA"
             button = tk.Button(
                 scrollable_frame,
-                text=f"{block_type.icon} {block_type.label}\n({block_type.default_time:g}분/EA)",
+                text=f"{block_type.icon} {block_type.label}\n({detail})",
                 bg=block_type.color,
                 fg="white",
                 font=("Arial", 10, "bold"),
@@ -556,10 +666,11 @@ class CanvasView:
             fill="white",
             tags=f"block_{block.id}",
         )
+        line1, line2 = self._block_metric_lines(block)
         self.canvas.create_text(
             block.x + 75,
             block.y + 45,
-            text=f"시간: {block.process_time:g}분/EA",
+            text=line1,
             font=("Arial", 8),
             fill="white",
             tags=f"block_{block.id}",
@@ -567,10 +678,26 @@ class CanvasView:
         self.canvas.create_text(
             block.x + 75,
             block.y + 60,
-            text=f"동시: {block.capacity} EA",
+            text=line2,
             font=("Arial", 8),
             fill="white",
             tags=f"block_{block.id}",
+        )
+
+    def _block_metric_lines(self, block: ProcessBlock) -> tuple[str, str]:
+        if block.type == "INPUT":
+            return (
+                f"수량: {block.input_quantity} EA",
+                f"투입: {block.input_time:g}분",
+            )
+        if block.type == "HOIST":
+            return (
+                f"운반: {block.transport_capacity} EA/회",
+                f"이동: {block.transport_time:g}분/회",
+            )
+        return (
+            f"처리: {block.process_time_per_ea:g}분/EA",
+            f"동시: {block.concurrent_capacity} EA",
         )
 
     def draw_connection(self, connection: ProcessConnection) -> None:
@@ -786,26 +913,19 @@ class ResultView:
         bottleneck_impact = self.controller.bottleneck_impact(result)
 
         self.summary_text.insert(tk.END, "=" * 40 + "\n")
-        self.summary_text.insert(tk.END, "   EA 단위 시뮬레이션 결과\n")
+        self.summary_text.insert(tk.END, "   묶음 기반 시뮬레이션 결과\n")
         self.summary_text.insert(tk.END, "=" * 40 + "\n\n")
-        self.summary_text.insert(tk.END, f"총 시뮬레이션 시간: {result.total_time:.1f}분\n")
-        self.summary_text.insert(tk.END, f"시작 공정 수: {result.source_count}개\n")
-        self.summary_text.insert(
-            tk.END,
-            f"시작 공정별 투입 수량: {result.units_per_source} EA\n",
-        )
-        self.summary_text.insert(
-            tk.END,
-            f"전체 투입 수량: {result.total_generated_units} EA\n\n",
-        )
+        self.summary_text.insert(tk.END, f"총 소요 시간: {result.total_time:.1f}분\n")
+        self.summary_text.insert(tk.END, f"전체 투입 수량: {result.total_input_quantity} EA\n")
+        self.summary_text.insert(tk.END, f"최종 output 수량: {result.final_output_quantity} EA\n\n")
         self.summary_text.insert(tk.END, f"병목 공정: {bottleneck_name}\n")
         self.summary_text.insert(tk.END, f"   이유: {bottleneck_reason}\n")
         self.summary_text.insert(tk.END, f"   영향: {bottleneck_impact}\n\n")
         self.summary_text.insert(tk.END, f"공정 수: {len(result.timeline)}개\n")
 
         avg_cycle = (
-            result.total_time / result.total_generated_units
-            if result.total_generated_units > 0
+            result.total_time / result.final_output_quantity
+            if result.final_output_quantity > 0
             else 0
         )
         self.summary_text.insert(tk.END, f"평균 소요 시간: {avg_cycle:.1f}분/EA\n")
@@ -818,13 +938,18 @@ class ResultView:
         self.timeline_canvas.create_text(
             10,
             y_offset,
-            text="공정 흐름 및 성능",
+            text="공정별 성능",
             anchor=tk.W,
             font=("Arial", 11, "bold"),
         )
         y_offset += 30
 
-        max_throughput = max((item.throughput for item in result.timeline), default=0)
+        finite_throughputs = [
+            item.throughput
+            for item in result.timeline
+            if item.throughput != float("inf")
+        ]
+        max_throughput = max(finite_throughputs, default=0)
         for idx, item in enumerate(result.timeline):
             block = self.controller.find_block(item.block_id)
             block_type = BLOCK_TYPES[block.type] if block else BLOCK_TYPES["FREE"]
@@ -840,10 +965,7 @@ class ResultView:
             self.timeline_canvas.create_text(
                 10,
                 y_offset + 15,
-                text=(
-                    f"시간: {item.process_time:g}분/EA | 동시: {item.capacity} EA | "
-                    f"이론 처리율: {item.throughput:.3f} EA/분"
-                ),
+                text=self._timeline_metric_text(item, block),
                 anchor=tk.W,
                 font=("Arial", 8),
                 fill="gray",
@@ -857,11 +979,27 @@ class ResultView:
                     font=("Arial", 8),
                     fill="#ef4444",
                 )
+                route_y = y_offset + 45
+            else:
+                route_y = y_offset + 30
+
+            self.timeline_canvas.create_text(
+                10,
+                route_y,
+                text=self._route_text(item.block_id),
+                anchor=tk.W,
+                font=("Arial", 8),
+                fill="#475569",
+            )
 
             bar_x = 210
             bar_width = 120
             bar_height = 20
-            bar_length = (item.throughput / max_throughput) * bar_width if max_throughput else 0
+            bar_length = (
+                (item.throughput / max_throughput) * bar_width
+                if max_throughput and item.throughput != float("inf")
+                else 0
+            )
             is_bottleneck = item.block_id == result.bottleneck_id
 
             self.timeline_canvas.create_rectangle(
@@ -891,18 +1029,7 @@ class ResultView:
                     fill="red",
                 )
 
-            if idx < len(result.timeline) - 1:
-                self.timeline_canvas.create_text(
-                    10,
-                    y_offset + 50,
-                    text="↓",
-                    anchor=tk.W,
-                    font=("Arial", 12),
-                    fill="#64748b",
-                )
-                y_offset += 70
-            else:
-                y_offset += 50
+            y_offset += 85 if item.avg_waiting > 0.1 else 70
 
         self.timeline_canvas.configure(scrollregion=self.timeline_canvas.bbox("all"))
 
@@ -914,16 +1041,16 @@ class ResultView:
         bottleneck_impact: str,
     ) -> None:
         self.analysis_text.insert(tk.END, "=" * 70 + "\n")
-        self.analysis_text.insert(tk.END, "              EA 단위 시뮬레이션 상세 분석\n")
+        self.analysis_text.insert(tk.END, "              묶음 기반 시뮬레이션 상세 분석\n")
         self.analysis_text.insert(tk.END, "=" * 70 + "\n\n")
 
         self.analysis_text.insert(tk.END, "공정 흐름\n")
         self.analysis_text.insert(tk.END, "-" * 70 + "\n")
-        flow_diagram = " → ".join(
-            [
-                f"{self._block_icon(item.block_id)}{self.controller.block_result_display_name(item)}"
-                for item in result.timeline
-            ]
+        flow_diagram = format_flow_diagram(
+            process_flow=result.process_flow,
+            connections=self.controller.scenario.connections,
+            block_label=self._block_name,
+            block_icon=self._block_icon,
         )
         self.analysis_text.insert(tk.END, f"{flow_diagram}\n\n")
 
@@ -935,13 +1062,20 @@ class ResultView:
                 tk.END,
                 f"\n{idx}. {self._block_icon(item.block_id)} {item_name}\n",
             )
+            block = self.controller.find_block(item.block_id)
             self.analysis_text.insert(tk.END, "   기본 정보:\n")
-            self.analysis_text.insert(tk.END, f"   • 처리 시간: {item.process_time:g}분/EA\n")
-            self.analysis_text.insert(tk.END, f"   • 동시 처리 수량: {item.capacity} EA\n")
-            self.analysis_text.insert(tk.END, f"   • 이론 처리율: {item.throughput:.3f} EA/분\n")
+            self._write_block_operation_details(item, block)
             self.analysis_text.insert(tk.END, f"   • 실제 처리 수량: {item.total_processed} EA\n")
+            self.analysis_text.insert(
+                tk.END,
+                f"   • 처리 묶음 수: {item.processed_bundle_count}개\n",
+            )
+            if item.transport_trips:
+                self.analysis_text.insert(
+                    tk.END,
+                    f"   • 호이스트 이동 횟수: {item.transport_trips}회\n",
+                )
             self.analysis_text.insert(tk.END, "\n   성능 지표:\n")
-            self.analysis_text.insert(tk.END, f"   • 단위 처리 시간: {item.process_time:.1f}분/EA\n")
             self.analysis_text.insert(tk.END, f"   • 평균 대기 시간: {item.avg_waiting:.1f}분\n")
 
             if item.block_id == result.bottleneck_id:
@@ -949,15 +1083,14 @@ class ResultView:
                 self.analysis_text.insert(tk.END, f"   → {bottleneck_reason}\n")
                 self.analysis_text.insert(tk.END, "   → 전체 공정의 처리 속도를 제한하는 구간입니다.\n")
 
-            if item.start_times:
-                self.analysis_text.insert(tk.END, "\n   EA별 타임라인 (처음 3개):\n")
-                for batch_idx in range(min(3, len(item.start_times))):
-                    start = item.start_times[batch_idx]
-                    end = item.completion_times[batch_idx]
+            if item.bundles:
+                self.analysis_text.insert(tk.END, "\n   묶음별 타임라인 (처음 5개):\n")
+                for bundle in item.bundles[:5]:
                     self.analysis_text.insert(
                         tk.END,
-                        f"   EA {batch_idx + 1}: {start:.1f}분 → {end:.1f}분 "
-                        f"({end - start:.1f}분)\n",
+                        f"   {bundle.material_name} {bundle.quantity}EA: "
+                        f"{bundle.start_time:.1f}분 → {bundle.completion_time:.1f}분 "
+                        f"({bundle.completion_time - bundle.start_time:.1f}분)\n",
                     )
 
         self.analysis_text.insert(tk.END, "\n\n병목 분석 및 개선 제안\n")
@@ -969,15 +1102,82 @@ class ResultView:
         self.analysis_text.insert(tk.END, "1. 병목 공정의 처리 시간 단축\n")
         self.analysis_text.insert(tk.END, "   - 공정 자동화 검토\n")
         self.analysis_text.insert(tk.END, "   - 작업 방법 개선\n\n")
-        self.analysis_text.insert(tk.END, "2. 병목 공정의 동시 처리 수량 증대\n")
+        self.analysis_text.insert(tk.END, "2. 병목 공정의 동시 가공 수량 증대\n")
         self.analysis_text.insert(tk.END, "   - 설비 대수 증설\n")
         self.analysis_text.insert(tk.END, "   - 병렬 처리 라인 구축\n")
+
+    def _write_block_operation_details(
+        self,
+        item: BlockResult,
+        block: ProcessBlock | None,
+    ) -> None:
+        if block and block.type == "INPUT":
+            self.analysis_text.insert(tk.END, f"   • 원자재명: {block.material_name}\n")
+            self.analysis_text.insert(tk.END, f"   • 투입 원자재 수: {block.input_quantity} EA\n")
+            self.analysis_text.insert(tk.END, f"   • 투입 시간: {block.input_time:g}분\n")
+            return
+        if block and block.type == "HOIST":
+            self.analysis_text.insert(tk.END, f"   • 1회 운반 수량: {block.transport_capacity} EA\n")
+            self.analysis_text.insert(tk.END, f"   • 1회 이동 시간: {block.transport_time:g}분\n")
+            self.analysis_text.insert(tk.END, f"   • 이론 운반율: {item.throughput:.3f} EA/분\n")
+            return
+
+        if block:
+            self.analysis_text.insert(
+                tk.END,
+                f"   • 처리 시간: {block.process_time_per_ea:g}분/EA\n",
+            )
+            self.analysis_text.insert(
+                tk.END,
+                f"   • 동시 가공 수량: {block.concurrent_capacity} EA\n",
+            )
+        self.analysis_text.insert(tk.END, f"   • 이론 처리율: {item.throughput:.3f} EA/분\n")
 
     def _block_icon(self, block_id: int) -> str:
         block = self.controller.find_block(block_id)
         if not block:
             return ""
         return BLOCK_TYPES[block.type].icon
+
+    def _block_name(self, block_id: int) -> str:
+        return self.controller.block_display_name(self.controller.find_block(block_id))
+
+    def _timeline_metric_text(
+        self,
+        item: BlockResult,
+        block: ProcessBlock | None,
+    ) -> str:
+        if block and block.type == "INPUT":
+            return (
+                f"투입 {item.total_processed} EA | 묶음 {item.processed_bundle_count}개 | "
+                f"투입 시간 {block.input_time:g}분"
+            )
+        if block and block.type == "HOIST":
+            return (
+                f"운반 {item.total_processed} EA | 묶음 {item.processed_bundle_count}개 | "
+                f"이동 {item.transport_trips}회"
+            )
+        return (
+            f"처리 {item.total_processed} EA | 묶음 {item.processed_bundle_count}개 | "
+            f"이론 처리율 {item.throughput:.3f} EA/분"
+        )
+
+    def _route_text(self, block_id: int) -> str:
+        outgoing = [
+            connection
+            for connection in self.controller.scenario.connections
+            if connection.from_block == block_id
+        ]
+        if not outgoing:
+            return "다음: 종료 공정"
+
+        names = [
+            self.controller.block_display_name(
+                self.controller.find_block(connection.to_block)
+            )
+            for connection in outgoing
+        ]
+        return f"다음: {', '.join(names)}"
 
     def _bottleneck_name(self, result: SimulationResult) -> str:
         if result.bottleneck_id is None:

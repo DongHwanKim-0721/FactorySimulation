@@ -15,8 +15,13 @@ def save(scenario: Scenario, path: str | Path) -> None:
                 "type": block.type,
                 "x": block.x,
                 "y": block.y,
-                "process_time": block.process_time,
-                "capacity": block.capacity,
+                "process_time_per_ea": block.process_time_per_ea,
+                "concurrent_capacity": block.concurrent_capacity,
+                "material_name": block.material_name,
+                "input_quantity": block.input_quantity,
+                "input_time": block.input_time,
+                "transport_capacity": block.transport_capacity,
+                "transport_time": block.transport_time,
                 "custom_name": block.custom_name,
             }
             for block in scenario.blocks
@@ -47,8 +52,13 @@ def load(path: str | Path) -> Scenario:
                 type=block_data["type"],
                 x=block_data["x"],
                 y=block_data["y"],
-                process_time=block_data["process_time"],
-                capacity=block_data["capacity"],
+                process_time_per_ea=block_data["process_time_per_ea"],
+                concurrent_capacity=block_data["concurrent_capacity"],
+                material_name=block_data.get("material_name", "원자재"),
+                input_quantity=block_data.get("input_quantity", 10),
+                input_time=block_data.get("input_time", 0.0),
+                transport_capacity=block_data.get("transport_capacity", 1),
+                transport_time=block_data.get("transport_time", 1.0),
                 custom_name=block_data.get("custom_name", ""),
             )
             for block_data in data.get("blocks", [])

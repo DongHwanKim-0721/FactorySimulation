@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from .models import ProcessBlock, ProcessConnection, Scenario
+
+
+def save(scenario: Scenario, path: str | Path) -> None:
+    data = {
+        "blocks": [
+            {
+                "id": block.id,
+                "type": block.type,
+                "x": block.x,
+                "y": block.y,
+                "process_time": block.process_time,
+                "capacity": block.capacity,
+                "custom_name": block.custom_name,
+            }
+            for block in scenario.blocks
+        ],
+        "connections": [
+            {
+                "id": connection.id,
+                "from": connection.from_block,
+                "to": connection.to_block,
+            }
+            for connection in scenario.connections
+        ],
+    }
+
+    Path(path).write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def load(path: str | Path) -> Scenario:
+    data: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
+
+    scenario = Scenario(
+        blocks=[
+            ProcessBlock(
+                id=block_data["id"],
+                type=block_data["type"],
+                x=block_data["x"],
+                y=block_data["y"],
+                process_time=block_data["process_time"],
+                capacity=block_data["capacity"],
+                custom_name=block_data.get("custom_name", ""),
+            )
+            for block_data in data.get("blocks", [])
+        ],
+        connections=[
+            ProcessConnection(
+                id=connection_data["id"],
+                from_block=connection_data["from"],
+                to_block=connection_data["to"],
+            )
+            for connection_data in data.get("connections", [])
+        ],
+    )
+    return scenario

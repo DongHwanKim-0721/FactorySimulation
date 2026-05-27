@@ -75,18 +75,21 @@ class Scenario:
         connection_id: int | None = None,
     ) -> ProcessConnection:
         if from_block == to_block:
-            raise ValueError("A block cannot connect to itself.")
+            raise ValueError("같은 블록끼리는 연결할 수 없습니다.")
 
         block_ids = {block.id for block in self.blocks}
         if from_block not in block_ids or to_block not in block_ids:
-            raise ValueError("Both connection endpoints must exist in the scenario.")
+            raise ValueError("연결하려는 블록이 시나리오에 있어야 합니다.")
 
         duplicate = any(
             connection.from_block == from_block and connection.to_block == to_block
             for connection in self.connections
         )
         if duplicate:
-            raise ValueError("Connection already exists.")
+            raise ValueError("이미 존재하는 연결입니다.")
+
+        if self._would_create_cycle(from_block, to_block):
+            raise ValueError("순환 흐름은 지원하지 않습니다.")
 
         connection = ProcessConnection(
             id=connection_id if connection_id is not None else self.next_connection_id(),
@@ -100,3 +103,23 @@ class Scenario:
         self.connections = [
             connection for connection in self.connections if connection.id != connection_id
         ]
+
+    def _would_create_cycle(self, from_block: int, to_block: int) -> bool:
+        stack = [to_block]
+        visited: set[int] = set()
+
+        while stack:
+            current = stack.pop()
+            if current == from_block:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+
+            stack.extend(
+                connection.to_block
+                for connection in self.connections
+                if connection.from_block == current
+            )
+
+        return False

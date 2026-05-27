@@ -41,6 +41,7 @@ class App:
 
         self.scenario = Scenario()
         self.last_result: SimulationResult | None = None
+        self.units_per_source_var = tk.IntVar(value=10)
         self.connection_start_id: int | None = None
         self.status_var = tk.StringVar(value="준비 완료")
 
@@ -61,6 +62,12 @@ class App:
 
         button_frame = ttk.Frame(toolbar)
         button_frame.pack(side=tk.RIGHT, padx=10)
+        ttk.Label(button_frame, text="시작 공정별 투입 수량(EA)").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Entry(button_frame, textvariable=self.units_per_source_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
         ttk.Button(button_frame, text="시뮬레이션 실행", command=self.run_simulation).pack(
             side=tk.LEFT, padx=2
         )
@@ -186,7 +193,7 @@ class App:
         time_var = tk.DoubleVar(value=block.process_time)
         capacity_var = tk.IntVar(value=block.capacity)
 
-        ttk.Label(form_frame, text="처리 시간 (분):").grid(
+        ttk.Label(form_frame, text="처리 시간(분/EA):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
         ttk.Entry(form_frame, textvariable=time_var, width=22).grid(
@@ -194,7 +201,7 @@ class App:
         )
         row += 1
 
-        ttk.Label(form_frame, text="처리 용량:").grid(
+        ttk.Label(form_frame, text="동시 처리 수량(EA):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
         ttk.Entry(form_frame, textvariable=capacity_var, width=22).grid(
@@ -206,11 +213,17 @@ class App:
                 process_time = float(time_var.get())
                 capacity = int(capacity_var.get())
             except tk.TclError:
-                messagebox.showerror("입력 오류", "처리 시간과 용량은 숫자로 입력해주세요.")
+                messagebox.showerror(
+                    "입력 오류",
+                    "처리 시간과 동시 처리 수량은 숫자로 입력해주세요.",
+                )
                 return
 
-            if process_time < 0 or capacity <= 0:
-                messagebox.showerror("입력 오류", "처리 시간은 0 이상, 용량은 1 이상이어야 합니다.")
+            if process_time <= 0 or capacity <= 0:
+                messagebox.showerror(
+                    "입력 오류",
+                    "처리 시간은 0보다 커야 하고 동시 처리 수량은 1 이상이어야 합니다.",
+                )
                 return
 
             if block.type == "FREE":
@@ -258,8 +271,8 @@ class App:
 
         try:
             self.scenario.add_connection(self.connection_start_id, block_id)
-        except ValueError:
-            messagebox.showwarning("연결 오류", "중복 연결이거나 연결할 수 없는 블록입니다.")
+        except ValueError as exc:
+            messagebox.showwarning("연결 오류", f"연결을 만들 수 없습니다:\n{exc}")
             self.status_var.set("연결을 생성하지 못했습니다.")
         else:
             self.canvas_view.redraw()
@@ -315,11 +328,27 @@ class App:
         if not self.scenario.blocks:
             messagebox.showwarning("경고", "공정 블록을 추가해주세요.")
             return
-        if not self.scenario.connections and len(self.scenario.blocks) > 1:
-            messagebox.showwarning("경고", "블록 간 연결이 필요합니다.")
+
+        try:
+            units_per_source = int(self.units_per_source_var.get())
+        except (tk.TclError, ValueError):
+            messagebox.showerror("입력 오류", "시작 공정별 투입 수량(EA)은 정수로 입력해주세요.")
             return
 
-        result = simulate(self.scenario.blocks, self.scenario.connections)
+        if units_per_source < 0:
+            messagebox.showerror("입력 오류", "시작 공정별 투입 수량(EA)은 0 이상이어야 합니다.")
+            return
+
+        try:
+            result = simulate(
+                self.scenario.blocks,
+                self.scenario.connections,
+                units_per_source=units_per_source,
+            )
+        except ValueError as exc:
+            messagebox.showerror("시뮬레이션 오류", str(exc))
+            return
+
         if not result.timeline:
             messagebox.showerror("오류", "시뮬레이션 결과가 없습니다.")
             return
@@ -405,8 +434,8 @@ class App:
         if not block:
             return "병목 없음"
         return (
-            f"처리율 {result.bottleneck_throughput:.3f} 배치/분 "
-            f"(용량 {block.capacity} / 시간 {block.process_time:g}분)"
+            f"이론 처리율 {result.bottleneck_throughput:.3f} EA/분 "
+            f"(동시 처리 수량 {block.capacity} EA / 처리 시간 {block.process_time:g}분/EA)"
         )
 
     def bottleneck_impact(self, result: SimulationResult) -> str:
@@ -442,7 +471,7 @@ class PaletteView:
         for key, block_type in BLOCK_TYPES.items():
             button = tk.Button(
                 scrollable_frame,
-                text=f"{block_type.icon} {block_type.label}\n({block_type.default_time:g}분)",
+                text=f"{block_type.icon} {block_type.label}\n({block_type.default_time:g}분/EA)",
                 bg=block_type.color,
                 fg="white",
                 font=("Arial", 10, "bold"),
@@ -530,7 +559,7 @@ class CanvasView:
         self.canvas.create_text(
             block.x + 75,
             block.y + 45,
-            text=f"시간: {block.process_time:g}분",
+            text=f"시간: {block.process_time:g}분/EA",
             font=("Arial", 8),
             fill="white",
             tags=f"block_{block.id}",
@@ -538,7 +567,7 @@ class CanvasView:
         self.canvas.create_text(
             block.x + 75,
             block.y + 60,
-            text=f"용량: {block.capacity}",
+            text=f"동시: {block.capacity} EA",
             font=("Arial", 8),
             fill="white",
             tags=f"block_{block.id}",
@@ -757,17 +786,29 @@ class ResultView:
         bottleneck_impact = self.controller.bottleneck_impact(result)
 
         self.summary_text.insert(tk.END, "=" * 40 + "\n")
-        self.summary_text.insert(tk.END, "   배치 시뮬레이션 결과\n")
+        self.summary_text.insert(tk.END, "   EA 단위 시뮬레이션 결과\n")
         self.summary_text.insert(tk.END, "=" * 40 + "\n\n")
         self.summary_text.insert(tk.END, f"총 시뮬레이션 시간: {result.total_time:.1f}분\n")
-        self.summary_text.insert(tk.END, f"총 배치 수: {result.total_batches}개\n\n")
+        self.summary_text.insert(tk.END, f"시작 공정 수: {result.source_count}개\n")
+        self.summary_text.insert(
+            tk.END,
+            f"시작 공정별 투입 수량: {result.units_per_source} EA\n",
+        )
+        self.summary_text.insert(
+            tk.END,
+            f"전체 투입 수량: {result.total_generated_units} EA\n\n",
+        )
         self.summary_text.insert(tk.END, f"병목 공정: {bottleneck_name}\n")
         self.summary_text.insert(tk.END, f"   이유: {bottleneck_reason}\n")
         self.summary_text.insert(tk.END, f"   영향: {bottleneck_impact}\n\n")
         self.summary_text.insert(tk.END, f"공정 수: {len(result.timeline)}개\n")
 
-        avg_cycle = result.total_time / result.total_batches if result.total_batches > 0 else 0
-        self.summary_text.insert(tk.END, f"평균 사이클 타임: {avg_cycle:.1f}분/배치\n")
+        avg_cycle = (
+            result.total_time / result.total_generated_units
+            if result.total_generated_units > 0
+            else 0
+        )
+        self.summary_text.insert(tk.END, f"평균 소요 시간: {avg_cycle:.1f}분/EA\n")
 
         self._draw_timeline(result)
         self._write_analysis(result, bottleneck_name, bottleneck_reason, bottleneck_impact)
@@ -800,8 +841,8 @@ class ResultView:
                 10,
                 y_offset + 15,
                 text=(
-                    f"시간: {item.process_time:g}분 | 용량: {item.capacity} | "
-                    f"처리율: {item.throughput:.3f}"
+                    f"시간: {item.process_time:g}분/EA | 동시: {item.capacity} EA | "
+                    f"이론 처리율: {item.throughput:.3f} EA/분"
                 ),
                 anchor=tk.W,
                 font=("Arial", 8),
@@ -873,7 +914,7 @@ class ResultView:
         bottleneck_impact: str,
     ) -> None:
         self.analysis_text.insert(tk.END, "=" * 70 + "\n")
-        self.analysis_text.insert(tk.END, "              배치 시뮬레이션 상세 분석\n")
+        self.analysis_text.insert(tk.END, "              EA 단위 시뮬레이션 상세 분석\n")
         self.analysis_text.insert(tk.END, "=" * 70 + "\n\n")
 
         self.analysis_text.insert(tk.END, "공정 흐름\n")
@@ -895,12 +936,12 @@ class ResultView:
                 f"\n{idx}. {self._block_icon(item.block_id)} {item_name}\n",
             )
             self.analysis_text.insert(tk.END, "   기본 정보:\n")
-            self.analysis_text.insert(tk.END, f"   • 처리 시간: {item.process_time:g}분\n")
-            self.analysis_text.insert(tk.END, f"   • 처리 용량: {item.capacity}개/회\n")
-            self.analysis_text.insert(tk.END, f"   • 처리율: {item.throughput:.3f} 배치/분\n")
-            self.analysis_text.insert(tk.END, f"   • 총 처리량: {item.total_processed}개\n")
+            self.analysis_text.insert(tk.END, f"   • 처리 시간: {item.process_time:g}분/EA\n")
+            self.analysis_text.insert(tk.END, f"   • 동시 처리 수량: {item.capacity} EA\n")
+            self.analysis_text.insert(tk.END, f"   • 이론 처리율: {item.throughput:.3f} EA/분\n")
+            self.analysis_text.insert(tk.END, f"   • 실제 처리 수량: {item.total_processed} EA\n")
             self.analysis_text.insert(tk.END, "\n   성능 지표:\n")
-            self.analysis_text.insert(tk.END, f"   • 평균 사이클 타임: {item.process_time:.1f}분\n")
+            self.analysis_text.insert(tk.END, f"   • 단위 처리 시간: {item.process_time:.1f}분/EA\n")
             self.analysis_text.insert(tk.END, f"   • 평균 대기 시간: {item.avg_waiting:.1f}분\n")
 
             if item.block_id == result.bottleneck_id:
@@ -909,13 +950,13 @@ class ResultView:
                 self.analysis_text.insert(tk.END, "   → 전체 공정의 처리 속도를 제한하는 구간입니다.\n")
 
             if item.start_times:
-                self.analysis_text.insert(tk.END, "\n   배치별 타임라인 (처음 3개):\n")
+                self.analysis_text.insert(tk.END, "\n   EA별 타임라인 (처음 3개):\n")
                 for batch_idx in range(min(3, len(item.start_times))):
                     start = item.start_times[batch_idx]
                     end = item.completion_times[batch_idx]
                     self.analysis_text.insert(
                         tk.END,
-                        f"   배치 {batch_idx + 1}: {start:.1f}분 → {end:.1f}분 "
+                        f"   EA {batch_idx + 1}: {start:.1f}분 → {end:.1f}분 "
                         f"({end - start:.1f}분)\n",
                     )
 
@@ -928,7 +969,7 @@ class ResultView:
         self.analysis_text.insert(tk.END, "1. 병목 공정의 처리 시간 단축\n")
         self.analysis_text.insert(tk.END, "   - 공정 자동화 검토\n")
         self.analysis_text.insert(tk.END, "   - 작업 방법 개선\n\n")
-        self.analysis_text.insert(tk.END, "2. 병목 공정의 용량 증대\n")
+        self.analysis_text.insert(tk.END, "2. 병목 공정의 동시 처리 수량 증대\n")
         self.analysis_text.insert(tk.END, "   - 설비 대수 증설\n")
         self.analysis_text.insert(tk.END, "   - 병렬 처리 라인 구축\n")
 

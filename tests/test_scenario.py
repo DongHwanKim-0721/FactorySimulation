@@ -19,6 +19,18 @@ def test_scenario_rejects_duplicate_and_self_connections():
         scenario.add_connection(1, 1)
 
 
+def test_scenario_rejects_cycle_connections():
+    scenario = Scenario()
+    scenario.add_block("INPUT", x=0, y=0, process_time=30)
+    scenario.add_block("CUTTING", x=200, y=0, process_time=45)
+    scenario.add_block("HEAT", x=400, y=0, process_time=120)
+    scenario.add_connection(1, 2)
+    scenario.add_connection(2, 3)
+
+    with pytest.raises(ValueError):
+        scenario.add_connection(3, 1)
+
+
 def test_delete_block_cascades_connections():
     scenario = Scenario()
     scenario.add_block("INPUT", x=0, y=0, process_time=30)

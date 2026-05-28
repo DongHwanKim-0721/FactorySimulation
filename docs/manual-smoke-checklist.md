@@ -51,7 +51,7 @@ Use this checklist for manual tkinter verification after changes to `app.py`.
 - Change speed between 0.5x, 1x, 2x, and 5x and confirm playhead movement changes.
 - Drag the time slider and confirm playback pauses and the diagram updates to the selected time.
 - Confirm bundle tokens show product/material labels and EA quantity.
-- Confirm waiting bundles stack outside the block and processing bundles appear inside the block.
+- Confirm waiting bundles stack outside the block and processing bundles appear beside the block without covering block text.
 - Confirm a block with waiting bundles gets a subtle warning outline.
 - Confirm the bottleneck block shows a small badge and is further emphasized when processing.
 - Click a bundle token and confirm the right panel shows selected bundle details.

@@ -1201,7 +1201,7 @@ class CanvasView:
 
     def draw_block(self, block: ProcessBlock) -> None:
         block_type = BLOCK_TYPES[block.type]
-        display_name = self.controller.block_display_name(block)
+        display_name = self._block_canvas_title(block)
         text_color = self._text_color_for_block(block.type)
         block_tokens = [token for token in self.current_tokens if token.block_id == block.id]
         has_waiting = any(token.state == "waiting" for token in block_tokens)
@@ -1315,6 +1315,11 @@ class CanvasView:
             tags=f"block_{block.id}",
         )
 
+    def _block_canvas_title(self, block: ProcessBlock) -> str:
+        if block.type == "INPUT":
+            return BLOCK_TYPES[block.type].label
+        return self.controller.block_display_name(block)
+
     def _text_color_for_block(self, block_type: str) -> str:
         if block_type in {"BENDING", "CUTTING", "PACKING"}:
             return "#111827"
@@ -1423,8 +1428,11 @@ class CanvasView:
         if token.state == "waiting":
             return block.x - 105, block.y + 8 + index * 30
         if token.state == "complete":
-            return block.x + block.width + 12, block.y + 8 + index * 30
-        return block.x + 12 + (index % 2) * 64, block.y + block.height - 38 + (index // 2) * 24
+            return block.x + block.width + 12, block.y + 38 + index * 30
+        return block.x + block.width + 12, block.y + 8 + index * 30
+
+    def _token_size(self, token: BundleTokenState) -> tuple[int, int]:
+        return (96 if token.is_aggregate else 58, 24)
 
     def _draw_token(
         self,
@@ -1433,8 +1441,7 @@ class CanvasView:
         y: float,
         selected_id: str | None,
     ) -> None:
-        width = 96 if token.is_aggregate else 58
-        height = 24
+        width, height = self._token_size(token)
         color = self.controller.animation.product_color(token.product_name)
         selected = token.token_id == selected_id
         outline = "#111827" if selected else "#ffffff"

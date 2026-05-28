@@ -1,5 +1,5 @@
-from app import BLOCK_TYPES, format_flow_diagram
-from engine.models import ProcessConnection
+from app import BLOCK_TYPES, CanvasView, format_flow_diagram
+from engine.models import ProcessBlock, ProcessConnection
 
 
 def test_branch_join_flow_diagram_uses_actual_connections():
@@ -92,3 +92,17 @@ def test_new_process_taxonomy_defaults_do_not_change_special_blocks():
     assert BLOCK_TYPES["HOIST"].default_transport_time == 3.0
     assert BLOCK_TYPES["INPUT"].default_input_quantity == 10
     assert BLOCK_TYPES["FREE"].default_process_time_per_ea == 30
+
+
+def test_input_block_canvas_title_uses_compact_label():
+    view = CanvasView.__new__(CanvasView)
+    block = ProcessBlock(
+        id=1,
+        type="INPUT",
+        x=0,
+        y=0,
+        product_name="제품",
+        material_name="원자재",
+    )
+
+    assert view._block_canvas_title(block) == "원자재 투입"

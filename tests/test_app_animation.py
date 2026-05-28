@@ -149,3 +149,39 @@ def test_canvas_token_drawing_does_not_depend_on_connection_delete_coordinates()
     view._draw_token(token, 10, 20, selected_id=None)
 
     assert [call[0] for call in view.canvas.calls] == ["rectangle", "text"]
+
+
+def test_processing_token_position_stays_outside_block_bounds():
+    view = CanvasView.__new__(CanvasView)
+    block = ProcessBlock(
+        id=1,
+        type="CUTTING",
+        x=100,
+        y=200,
+        width=150,
+        height=80,
+    )
+    token = BundleTokenState(
+        token_id="bundle:1",
+        bundle_id=1,
+        block_id=1,
+        product_name="P",
+        material_name="A",
+        quantity=10,
+        state="processing",
+        arrival_time=0,
+        start_time=0,
+        completion_time=10,
+        progress=0.5,
+        source_token_ids=("bundle:1",),
+    )
+
+    x, y = view._token_position(token, block, index=0)
+    token_width, token_height = view._token_size(token)
+
+    token_is_left = x + token_width <= block.x
+    token_is_right = x >= block.x + block.width
+    token_is_above = y + token_height <= block.y
+    token_is_below = y >= block.y + block.height
+
+    assert token_is_left or token_is_right or token_is_above or token_is_below

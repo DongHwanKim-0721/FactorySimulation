@@ -1,3 +1,4 @@
+import json
 import pytest
 from pathlib import Path
 
@@ -120,5 +121,114 @@ def test_load_legacy_scenario_defaults_missing_product_name():
         loaded = load(path)
 
         assert loaded.blocks[0].product_name == "제품"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_legacy_block_types_normalize_on_load_and_save():
+    path = Path("tests/.tmp_legacy_types.json")
+    normalized_path = Path("tests/.tmp_normalized_types.json")
+    path.write_text(
+        """
+{
+  "blocks": [
+    {
+      "id": 1,
+      "type": "INPUT",
+      "x": 10,
+      "y": 20,
+      "process_time_per_ea": 30.0,
+      "concurrent_capacity": 1,
+      "product_name": "P1",
+      "material_name": "A",
+      "input_quantity": 6,
+      "input_time": 0
+    },
+    {
+      "id": 2,
+      "type": "STORAGE",
+      "x": 210,
+      "y": 20,
+      "process_time_per_ea": 2,
+      "concurrent_capacity": 2,
+      "custom_name": "legacy storage"
+    },
+    {
+      "id": 3,
+      "type": "STRAIGHTNESS",
+      "x": 410,
+      "y": 20,
+      "process_time_per_ea": 3,
+      "concurrent_capacity": 1
+    },
+    {
+      "id": 4,
+      "type": "PRESS",
+      "x": 610,
+      "y": 20,
+      "process_time_per_ea": 4,
+      "concurrent_capacity": 1
+    }
+  ],
+  "connections": [
+    {"id": 1, "from": 1, "to": 2},
+    {"id": 2, "from": 2, "to": 3},
+    {"id": 3, "from": 3, "to": 4}
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        loaded = load(path)
+
+        assert [block.type for block in loaded.blocks] == [
+            "INPUT",
+            "WORK_WAITING",
+            "INSPECTION",
+            "CORRECTION",
+        ]
+        assert loaded.blocks[1].id == 2
+        assert loaded.blocks[1].x == 210
+        assert loaded.blocks[1].process_time_per_ea == 2
+        assert loaded.blocks[1].concurrent_capacity == 2
+        assert loaded.blocks[1].custom_name == "legacy storage"
+        assert [(item.from_block, item.to_block) for item in loaded.connections] == [
+            (1, 2),
+            (2, 3),
+            (3, 4),
+        ]
+
+        result = simulate(loaded.blocks, loaded.connections)
+        assert result.final_output_quantity == 6
+
+        save(loaded, normalized_path)
+        saved = json.loads(normalized_path.read_text(encoding="utf-8"))
+        assert [block["type"] for block in saved["blocks"]] == [
+            "INPUT",
+            "WORK_WAITING",
+            "INSPECTION",
+            "CORRECTION",
+        ]
+    finally:
+        path.unlink(missing_ok=True)
+        normalized_path.unlink(missing_ok=True)
+
+
+def test_save_normalizes_legacy_block_types_from_memory():
+    scenario = Scenario()
+    scenario.add_block("STORAGE", x=0, y=0, process_time_per_ea=5)
+    scenario.add_block("PRESS", x=200, y=0, process_time_per_ea=7)
+    path = Path("tests/.tmp_memory_legacy_types.json")
+
+    try:
+        save(scenario, path)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+
+        assert [block["type"] for block in saved["blocks"]] == [
+            "WORK_WAITING",
+            "CORRECTION",
+        ]
     finally:
         path.unlink(missing_ok=True)

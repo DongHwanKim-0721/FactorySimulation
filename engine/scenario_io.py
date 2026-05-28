@@ -7,12 +7,19 @@ from typing import Any
 from .models import ProcessBlock, ProcessConnection, Scenario
 
 
+LEGACY_BLOCK_TYPE_MAP = {
+    "STORAGE": "WORK_WAITING",
+    "STRAIGHTNESS": "INSPECTION",
+    "PRESS": "CORRECTION",
+}
+
+
 def save(scenario: Scenario, path: str | Path) -> None:
     data = {
         "blocks": [
             {
                 "id": block.id,
-                "type": block.type,
+                "type": normalize_block_type(block.type),
                 "x": block.x,
                 "y": block.y,
                 "process_time_per_ea": block.process_time_per_ea,
@@ -50,7 +57,7 @@ def load(path: str | Path) -> Scenario:
         blocks=[
             ProcessBlock(
                 id=block_data["id"],
-                type=block_data["type"],
+                type=normalize_block_type(block_data["type"]),
                 x=block_data["x"],
                 y=block_data["y"],
                 process_time_per_ea=block_data["process_time_per_ea"],
@@ -75,3 +82,7 @@ def load(path: str | Path) -> Scenario:
         ],
     )
     return scenario
+
+
+def normalize_block_type(block_type: str) -> str:
+    return LEGACY_BLOCK_TYPE_MAP.get(block_type, block_type)

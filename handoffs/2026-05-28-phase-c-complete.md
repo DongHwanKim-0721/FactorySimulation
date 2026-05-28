@@ -10,7 +10,11 @@ Local workspace: `C:\Users\IJMAIL\vscode-python\FactorySimulation`
 
 Branch: `main`
 
-Phase C product-label tracking is implemented locally and intended to be pushed to `origin/main` with this handoff.
+Phase C product-label tracking is implemented and pushed to `origin/main`.
+
+Implementation commit:
+
+- `074274d Implement phase C product label tracking`
 
 Primary references:
 
@@ -51,10 +55,11 @@ Known remaining manual check:
 
 ## GitHub Follow-Up
 
-After pushing this work, update the GitHub issues:
+GitHub issue state at handoff update time:
 
-- Comment on and close `#22`, `#23`, `#24`, `#25` as completed.
-- Comment on and close `#21` as the umbrella PRD if all implementation issues are closed.
+- Umbrella issue `#21` closed as completed.
+- Implementation issues `#22`, `#23`, `#24`, `#25` closed as completed.
+- Each issue has a completion comment referencing commit `074274d` and the passing test command.
 
 ## Suggested Skills
 

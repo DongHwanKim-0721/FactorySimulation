@@ -197,7 +197,7 @@ class App:
         block_type_info = BLOCK_TYPES[block.type]
         dialog = tk.Toplevel(self.root)
         dialog.title(f"{self.block_display_name(block)} 설정")
-        dialog.geometry("430x330")
+        dialog.geometry("430x360")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -221,6 +221,7 @@ class App:
             )
             row += 1
 
+        product_name_var = tk.StringVar(value=block.product_name)
         material_name_var = tk.StringVar(value=block.material_name)
         input_quantity_var = tk.IntVar(value=block.input_quantity)
         input_time_var = tk.DoubleVar(value=block.input_time)
@@ -230,6 +231,14 @@ class App:
         transport_time_var = tk.DoubleVar(value=block.transport_time)
 
         if block.type == "INPUT":
+            ttk.Label(form_frame, text="제품명:").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            ttk.Entry(form_frame, textvariable=product_name_var, width=22).grid(
+                row=row, column=1, sticky=tk.W, pady=5
+            )
+            row += 1
+
             ttk.Label(form_frame, text="원자재명:").grid(
                 row=row, column=0, sticky=tk.W, pady=5
             )
@@ -299,7 +308,14 @@ class App:
                 return
 
             if block.type == "INPUT":
+                product_name = product_name_var.get().strip()
                 material_name = material_name_var.get().strip()
+                if not product_name:
+                    messagebox.showerror(
+                        "입력 오류",
+                        "제품명을 입력해주세요.",
+                    )
+                    return
                 if not material_name:
                     messagebox.showerror("입력 오류", "원자재명을 입력해주세요.")
                     return
@@ -309,6 +325,7 @@ class App:
                         "투입 원자재 수와 투입 시간은 0 이상이어야 합니다.",
                     )
                     return
+                block.product_name = product_name
                 block.material_name = material_name
                 block.input_quantity = input_quantity
                 block.input_time = input_time
@@ -501,8 +518,11 @@ class App:
     def block_display_name(self, block: ProcessBlock | None) -> str:
         if block is None:
             return "Unknown"
-        if block.type == "INPUT" and block.material_name:
-            return f"{BLOCK_TYPES[block.type].label}({block.material_name})"
+        if block.type == "INPUT" and (block.product_name or block.material_name):
+            return (
+                f"{BLOCK_TYPES[block.type].label}"
+                f"({block.product_name}/{block.material_name})"
+            )
         if block.type == "FREE" and block.custom_name:
             return block.custom_name
         return BLOCK_TYPES[block.type].label
@@ -918,6 +938,20 @@ class ResultView:
         self.summary_text.insert(tk.END, f"총 소요 시간: {result.total_time:.1f}분\n")
         self.summary_text.insert(tk.END, f"전체 투입 수량: {result.total_input_quantity} EA\n")
         self.summary_text.insert(tk.END, f"최종 output 수량: {result.final_output_quantity} EA\n\n")
+        self.summary_text.insert(
+            tk.END,
+            f"제품 추적 라벨 수: {result.unique_product_count}개\n",
+        )
+        self.summary_text.insert(
+            tk.END,
+            "제품 라벨별 투입 EA: "
+            f"{self._format_product_quantities(result.input_quantity_by_product)}\n",
+        )
+        self.summary_text.insert(
+            tk.END,
+            "제품 라벨별 최종 output EA: "
+            f"{self._format_product_quantities(result.final_output_quantity_by_product)}\n\n",
+        )
         self.summary_text.insert(tk.END, f"병목 공정: {bottleneck_name}\n")
         self.summary_text.insert(tk.END, f"   이유: {bottleneck_reason}\n")
         self.summary_text.insert(tk.END, f"   영향: {bottleneck_impact}\n\n")
@@ -932,6 +966,14 @@ class ResultView:
 
         self._draw_timeline(result)
         self._write_analysis(result, bottleneck_name, bottleneck_reason, bottleneck_impact)
+
+    def _format_product_quantities(self, quantities: dict[str, int]) -> str:
+        if not quantities:
+            return "없음"
+        return ", ".join(
+            f"{product_name} {quantity}EA"
+            for product_name, quantity in sorted(quantities.items())
+        )
 
     def _draw_timeline(self, result: SimulationResult) -> None:
         y_offset = 30
@@ -1065,6 +1107,14 @@ class ResultView:
             block = self.controller.find_block(item.block_id)
             self.analysis_text.insert(tk.END, "   기본 정보:\n")
             self._write_block_operation_details(item, block)
+            self.analysis_text.insert(
+                tk.END,
+                f"   • 처리 제품 라벨 수: {item.unique_product_count}개\n",
+            )
+            self.analysis_text.insert(
+                tk.END,
+                f"   • 처리 원자재 수: {item.unique_material_count}개\n",
+            )
             self.analysis_text.insert(tk.END, f"   • 실제 처리 수량: {item.total_processed} EA\n")
             self.analysis_text.insert(
                 tk.END,
@@ -1088,7 +1138,8 @@ class ResultView:
                 for bundle in item.bundles[:5]:
                     self.analysis_text.insert(
                         tk.END,
-                        f"   {bundle.material_name} {bundle.quantity}EA: "
+                        f"   {bundle.product_name}/{bundle.material_name} "
+                        f"{bundle.quantity}EA: "
                         f"{bundle.start_time:.1f}분 → {bundle.completion_time:.1f}분 "
                         f"({bundle.completion_time - bundle.start_time:.1f}분)\n",
                     )
@@ -1112,6 +1163,10 @@ class ResultView:
         block: ProcessBlock | None,
     ) -> None:
         if block and block.type == "INPUT":
+            self.analysis_text.insert(
+                tk.END,
+                f"   • 제품명: {block.product_name}\n",
+            )
             self.analysis_text.insert(tk.END, f"   • 원자재명: {block.material_name}\n")
             self.analysis_text.insert(tk.END, f"   • 투입 원자재 수: {block.input_quantity} EA\n")
             self.analysis_text.insert(tk.END, f"   • 투입 시간: {block.input_time:g}분\n")

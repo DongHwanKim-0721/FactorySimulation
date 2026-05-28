@@ -1,12 +1,13 @@
-# Manual Smoke Checklist: Bundle/Hoist Phase A
+# Manual Smoke Checklist: Product Label Tracking Phase C
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 Use this checklist for manual tkinter verification after changes to `app.py`.
 
 ## Basic Editing
 
-- Add an INPUT block, edit material name, input quantity, and input time.
+- Add an INPUT block, edit product name, material name, input quantity, and input time.
+- Confirm process and HOIST block settings do not show a product-name field.
 - Add a process block, edit process time and concurrent processing quantity.
 - Add a HOIST block, edit transport quantity and move time.
 - Add, move, connect, delete blocks and connections.
@@ -15,6 +16,7 @@ Use this checklist for manual tkinter verification after changes to `app.py`.
 ## Simulation Scenarios
 
 - INPUT-only: total input quantity and final output quantity match the INPUT quantity.
+- Multiple INPUT blocks may reuse the same product name and the same product/material pair.
 - Serial: INPUT 10EA, input time 0, process 1 min/EA and 1EA capacity, second process 1 min/EA and 1EA capacity produces 20 min total time.
 - Input time: same serial scenario with input time 5 min produces 25 min total time.
 - Hoist: 10EA with 4EA per move and 3 min per move reports 9 min and 3 moves.
@@ -25,14 +27,16 @@ Use this checklist for manual tkinter verification after changes to `app.py`.
 
 ## Results
 
-- Summary shows total input quantity, final output quantity, and total time.
-- Block results show processed EA quantity and processed bundle count.
+- Summary shows total input quantity, final output quantity, total time, unique product-label count, product-label input EA, and product-label output EA.
+- Block results show processed EA quantity, processed bundle count, unique product-label count, and unique material count.
 - HOIST results show move count.
-- Detailed analysis shows material name, bundle quantity, start time, and completion time.
+- Detailed analysis shows product name, material name, bundle quantity, start time, and completion time.
+- Branch/join bundle details keep product and material labels without merging same-label bundles.
 - Branch/join flow is shown from actual connections, not as a fake linear chain.
 
 ## Persistence
 
-- Save a scenario containing INPUT, process, and HOIST blocks.
+- Save a scenario containing INPUT product/material labels, process, and HOIST blocks.
 - Load the saved scenario and confirm all new fields are preserved.
+- Load an older scenario JSON with no `product_name` and confirm INPUT uses default product name `제품`.
 - Run simulation after load and compare the result with the pre-save run.

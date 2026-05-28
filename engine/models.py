@@ -11,6 +11,7 @@ class ProcessBlock:
     y: float
     process_time_per_ea: float = 30.0
     concurrent_capacity: int = 1
+    product_name: str = "제품"
     material_name: str = "원자재"
     input_quantity: int = 10
     input_time: float = 0.0
@@ -50,6 +51,7 @@ class Scenario:
         y: float,
         process_time_per_ea: float = 30.0,
         concurrent_capacity: int = 1,
+        product_name: str = "제품",
         material_name: str = "원자재",
         input_quantity: int = 10,
         input_time: float = 0.0,
@@ -65,6 +67,7 @@ class Scenario:
             y=y,
             process_time_per_ea=process_time_per_ea,
             concurrent_capacity=concurrent_capacity,
+            product_name=product_name,
             material_name=material_name,
             input_quantity=input_quantity,
             input_time=input_time,

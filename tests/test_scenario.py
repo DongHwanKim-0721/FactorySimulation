@@ -54,6 +54,7 @@ def test_save_load_roundtrip_then_simulate_bundle_scenario():
         "INPUT",
         x=0,
         y=0,
+        product_name="P1",
         material_name="A",
         input_quantity=10,
         input_time=5,
@@ -83,8 +84,41 @@ def test_save_load_roundtrip_then_simulate_bundle_scenario():
         result = simulate(loaded.blocks, loaded.connections)
 
         assert loaded == scenario
+        assert loaded.blocks[0].product_name == "P1"
         assert result.total_time == 24
         assert result.total_input_quantity == 10
         assert result.final_output_quantity == 10
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_legacy_scenario_defaults_missing_product_name():
+    path = Path("tests/.tmp_legacy_scenario.json")
+    path.write_text(
+        """
+{
+  "blocks": [
+    {
+      "id": 1,
+      "type": "INPUT",
+      "x": 0,
+      "y": 0,
+      "process_time_per_ea": 30.0,
+      "concurrent_capacity": 1,
+      "material_name": "A",
+      "input_quantity": 10,
+      "input_time": 0
+    }
+  ],
+  "connections": []
+}
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        loaded = load(path)
+
+        assert loaded.blocks[0].product_name == "제품"
     finally:
         path.unlink(missing_ok=True)

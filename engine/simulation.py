@@ -12,6 +12,7 @@ from .models import ProcessBlock, ProcessConnection
 class BundleRecord:
     block_id: int
     bundle_id: int
+    product_name: str
     material_name: str
     quantity: int
     source_block_id: int
@@ -33,6 +34,8 @@ class BlockResult:
     avg_waiting: float
     total_processed: int
     processed_bundle_count: int
+    unique_product_count: int
+    unique_material_count: int
     transport_trips: int
     bundles: list[BundleRecord]
 
@@ -43,6 +46,9 @@ class SimulationResult:
     total_time: float
     total_input_quantity: int
     final_output_quantity: int
+    input_quantity_by_product: dict[str, int]
+    final_output_quantity_by_product: dict[str, int]
+    unique_product_count: int
     bottleneck_id: int | None
     bottleneck_throughput: float
     process_flow: list[int]
@@ -51,6 +57,7 @@ class SimulationResult:
 @dataclass(frozen=True)
 class _Bundle:
     bundle_id: int
+    product_name: str
     material_name: str
     quantity: int
     source_block_id: int
@@ -88,6 +95,9 @@ def simulate(
             total_time=0,
             total_input_quantity=0,
             final_output_quantity=0,
+            input_quantity_by_product={},
+            final_output_quantity_by_product={},
+            unique_product_count=0,
             bottleneck_id=None,
             bottleneck_throughput=0,
             process_flow=[],
@@ -132,6 +142,12 @@ def simulate(
 
     timeline = [results_by_block[block_id] for block_id in process_flow]
     bottleneck_id, bottleneck_throughput = _analyze_bottleneck(timeline, block_by_id)
+    input_quantity_by_product = _input_quantity_by_product(timeline, block_by_id)
+    final_output_quantity_by_product = _final_output_quantity_by_product(
+        timeline,
+        connections,
+    )
+    product_names = set(input_quantity_by_product) | set(final_output_quantity_by_product)
 
     return SimulationResult(
         timeline=timeline,
@@ -140,6 +156,9 @@ def simulate(
             block.input_quantity for block in blocks if _is_input(block)
         ),
         final_output_quantity=_final_output_quantity(timeline, connections),
+        input_quantity_by_product=input_quantity_by_product,
+        final_output_quantity_by_product=final_output_quantity_by_product,
+        unique_product_count=len(product_names),
         bottleneck_id=bottleneck_id,
         bottleneck_throughput=bottleneck_throughput,
         process_flow=process_flow,
@@ -154,6 +173,10 @@ def _validate_block_fields(blocks: list[ProcessBlock]) -> None:
         block_ids.add(block.id)
 
         if _is_input(block):
+            if not block.product_name.strip():
+                raise ValueError(
+                    "제품명은 비워둘 수 없습니다."
+                )
             if not block.material_name.strip():
                 raise ValueError("원자재명은 비워둘 수 없습니다.")
             if block.input_quantity < 0:
@@ -267,6 +290,7 @@ def _process_input_block(
 
     bundle = _Bundle(
         bundle_id=new_bundle_id(),
+        product_name=block.product_name,
         material_name=block.material_name,
         quantity=block.input_quantity,
         source_block_id=block.id,
@@ -367,6 +391,7 @@ def _route_processed_bundles(
             arrivals_by_block[child_id].append(
                 _Bundle(
                     bundle_id=bundle.bundle_id,
+                    product_name=bundle.product_name,
                     material_name=bundle.material_name,
                     quantity=bundle.quantity,
                     source_block_id=bundle.source_block_id,
@@ -386,6 +411,7 @@ def _route_processed_bundles(
             arrivals_by_block[child_id].append(
                 _Bundle(
                     bundle_id=new_bundle_id(),
+                    product_name=bundle.product_name,
                     material_name=bundle.material_name,
                     quantity=quantity,
                     source_block_id=bundle.source_block_id,
@@ -427,6 +453,7 @@ def _build_block_result(
         BundleRecord(
             block_id=block.id,
             bundle_id=item.bundle.bundle_id,
+            product_name=item.bundle.product_name,
             material_name=item.bundle.material_name,
             quantity=item.bundle.quantity,
             source_block_id=item.bundle.source_block_id,
@@ -453,6 +480,8 @@ def _build_block_result(
         avg_waiting=sum(waiting_times) / len(waiting_times) if waiting_times else 0,
         total_processed=sum(record.quantity for record in records),
         processed_bundle_count=len(records),
+        unique_product_count=len({record.product_name for record in records}),
+        unique_material_count=len({record.material_name for record in records}),
         transport_trips=transport_trips,
         bundles=records,
     )
@@ -501,6 +530,37 @@ def _final_output_quantity(
         for item in timeline
         if item.block_id not in parent_ids
     )
+
+
+def _input_quantity_by_product(
+    timeline: list[BlockResult],
+    block_by_id: dict[int, ProcessBlock],
+) -> dict[str, int]:
+    quantities: dict[str, int] = {}
+    for item in timeline:
+        if not _is_input(block_by_id[item.block_id]):
+            continue
+        for bundle in item.bundles:
+            quantities[bundle.product_name] = (
+                quantities.get(bundle.product_name, 0) + bundle.quantity
+            )
+    return quantities
+
+
+def _final_output_quantity_by_product(
+    timeline: list[BlockResult],
+    connections: list[ProcessConnection],
+) -> dict[str, int]:
+    parent_ids = {connection.from_block for connection in connections}
+    quantities: dict[str, int] = {}
+    for item in timeline:
+        if item.block_id in parent_ids:
+            continue
+        for bundle in item.bundles:
+            quantities[bundle.product_name] = (
+                quantities.get(bundle.product_name, 0) + bundle.quantity
+            )
+    return quantities
 
 
 def _sort_bundles(bundles: list[_Bundle]) -> list[_Bundle]:

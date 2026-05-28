@@ -6,6 +6,7 @@ from engine.simulation import simulate, topological_flow
 
 def input_block(
     block_id: int,
+    product_name: str = "P",
     material_name: str = "A",
     quantity: int = 10,
     input_time: float = 0,
@@ -15,6 +16,7 @@ def input_block(
         type="INPUT",
         x=0,
         y=0,
+        product_name=product_name,
         material_name=material_name,
         input_quantity=quantity,
         input_time=input_time,
@@ -69,6 +71,7 @@ def test_input_only_block_generates_one_bundle_and_preserves_quantity():
     assert result.bottleneck_id is None
     assert processed_by_id(result) == {1: 10}
     assert result.timeline[0].processed_bundle_count == 1
+    assert result.timeline[0].bundles[0].product_name == "P"
     assert result.timeline[0].bundles[0].material_name == "A"
 
 
@@ -152,6 +155,9 @@ def test_engine_rejects_invalid_bundle_graph_connections():
 
 
 def test_engine_rejects_invalid_numeric_fields():
+    with pytest.raises(ValueError, match="제품명"):
+        simulate([input_block(1, product_name=" ")], [])
+
     with pytest.raises(ValueError, match="투입 원자재 수"):
         simulate([input_block(1, quantity=-1)], [])
 
@@ -287,4 +293,109 @@ def test_hoist_blocks_keep_fifo_instead_of_material_grouping():
         ("A", 0),
         ("B", 1),
         ("A", 2),
+    ]
+
+
+def test_product_label_is_preserved_through_branch_and_join():
+    blocks = [
+        input_block(1, product_name="P1", material_name="A", quantity=10),
+        process_block(2, concurrent_capacity=4),
+        hoist_block(3, transport_capacity=1, transport_time=1),
+        process_block(4, concurrent_capacity=10),
+    ]
+    connections = [
+        ProcessConnection(id=1, from_block=1, to_block=2),
+        ProcessConnection(id=2, from_block=1, to_block=3),
+        ProcessConnection(id=3, from_block=2, to_block=4),
+        ProcessConnection(id=4, from_block=3, to_block=4),
+    ]
+
+    result = simulate(blocks, connections)
+
+    branch_one = bundles_for(result, 2)
+    branch_two = bundles_for(result, 3)
+    joined = bundles_for(result, 4)
+
+    assert [(bundle.product_name, bundle.material_name) for bundle in branch_one] == [
+        ("P1", "A")
+    ]
+    assert [(bundle.product_name, bundle.material_name) for bundle in branch_two] == [
+        ("P1", "A")
+    ]
+    assert [(bundle.product_name, bundle.material_name) for bundle in joined] == [
+        ("P1", "A"),
+        ("P1", "A"),
+    ]
+    assert len({bundle.bundle_id for bundle in joined}) == 2
+
+
+def test_same_product_and_material_inputs_are_not_merged():
+    blocks = [
+        input_block(1, product_name="P1", material_name="A", quantity=5),
+        input_block(2, product_name="P1", material_name="A", quantity=7),
+        process_block(3, process_time=1, concurrent_capacity=10),
+    ]
+    connections = [
+        ProcessConnection(id=1, from_block=1, to_block=3),
+        ProcessConnection(id=2, from_block=2, to_block=3),
+    ]
+
+    result = simulate(blocks, connections)
+    joined = bundles_for(result, 3)
+
+    assert [
+        (bundle.product_name, bundle.material_name, bundle.quantity)
+        for bundle in joined
+    ] == [
+        ("P1", "A", 5),
+        ("P1", "A", 7),
+    ]
+    assert len({bundle.bundle_id for bundle in joined}) == 2
+
+
+def test_product_quantities_are_aggregated_for_inputs_and_sink_outputs():
+    blocks = [
+        input_block(1, product_name="P1", material_name="A", quantity=4),
+        input_block(2, product_name="P1", material_name="B", quantity=6),
+        input_block(3, product_name="P2", material_name="C", quantity=3),
+        process_block(4, process_time=1, concurrent_capacity=10),
+        hoist_block(5, transport_capacity=10, transport_time=1),
+        process_block(6, process_time=1, concurrent_capacity=10),
+    ]
+    connections = [
+        ProcessConnection(id=1, from_block=1, to_block=4),
+        ProcessConnection(id=2, from_block=2, to_block=5),
+        ProcessConnection(id=3, from_block=3, to_block=6),
+    ]
+
+    result = simulate(blocks, connections)
+
+    assert result.unique_product_count == 2
+    assert result.input_quantity_by_product == {"P1": 10, "P2": 3}
+    assert result.final_output_quantity_by_product == {"P1": 10, "P2": 3}
+
+
+def test_product_label_does_not_affect_material_grouping():
+    blocks = [
+        input_block(1, product_name="P1", material_name="A", quantity=5, input_time=0),
+        input_block(2, product_name="P3", material_name="B", quantity=5, input_time=0),
+        input_block(3, product_name="P2", material_name="A", quantity=5, input_time=2),
+        process_block(4, process_time=1, concurrent_capacity=5),
+    ]
+    connections = [
+        ProcessConnection(id=1, from_block=1, to_block=4),
+        ProcessConnection(id=2, from_block=2, to_block=4),
+        ProcessConnection(id=3, from_block=3, to_block=4),
+    ]
+
+    result = simulate(blocks, connections)
+    processed = bundles_for(result, 4)
+
+    assert [
+        (bundle.product_name, bundle.material_name, bundle.start_time)
+        for bundle in processed
+    ] == [
+        ("P1", "A", 0),
+        ("P2", "A", 2),
+        ("P3", "B", 3),
     ]
